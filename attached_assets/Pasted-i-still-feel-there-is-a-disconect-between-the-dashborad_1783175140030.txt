@@ -1,0 +1,68 @@
+i still feel there is a disconect between the dashborad and the various interfaces for changing the configurations/settings
+
+4 minutes ago
+Investigating dashboard-settings connection
+
+Investigating dashboard-settings connection
+
+Exploring dashboard and settings structure
+
+Worked for 16 seconds
+Exploring codebase configuration
+
+Exploring codebase configuration
+Let me explore the full settings/config surface before touching anything.
+
+
+Worked for 8 seconds
+its not a ui problem, its a logic and connectivity issue
+
+3 minutes ago
+Exploring codebase for configuration
+
+Exploring codebase for configuration
+Let me map the full settings/logic flow before drawing any conclusions.
+
+
+Show less
+
+Mapping settings flow across the full stack
+
+Subagent: Explore the gyroscope monitoring project and answer these specific questions: 1. What settings/config values exist in the system? (targetRpm, targetDurationHours, thresholds, PID gains, anything else) 2. Where are they stored? (DB table, memStore, settings route, etc.) — find the actual schema/types. 3. How do they flow from the dashboard UI into the backend? Trace each dialog/form: ThresholdsDialog, TuningDialog, RemoteDialog, session start params — what API calls do they make? 4. Are any settings used by the backend for real logic (alert thresholds, PID control, motor RPM target) — or are they just stored and never read back? 5. When a session starts, what settings does the session inherit — and are those values reflected anywhere on the running dashboard? 6. Do any config values written in one dialog fail to reach the hardware or influence any computed value? Look at: - artifacts/api-server/src/routes/ (all routes) - artifacts/api-server/src/lib/ (all lib files) - artifacts/gyro-dashboard/src/components/ (ThresholdsDialog, TuningDialog, RemoteDialog, SessionControl, any settings components) - artifacts/gyro-dashboard/src/pages/dashboard.tsx (how settings are fetched and passed around) Be specific: name the files, the fields, and exactly where the chain breaks if it does.
+Saving tuning settings
+
+Saving tuning settings
+Three concrete breaks found. Let me read the exact files I need to fix all of them before touching anything.
+
+
+Show less
+
+Opened settingsStore.ts
+
+Reading ThresholdsDialog.tsx
+
+Reading TuningDialog.tsx
+Locating dialog file names
+
+Locating dialog file names
+
+Found files
+Reading config files
+
+Reading config files
+
+Opened ControlDialogs.tsx
+
+Opened settings.tsx
+
+Opened ControlDrawer.tsx
+Detecting default value mismatches
+
+Detecting default value mismatches
+Now I can see everything clearly. There are four concrete breaks:
+
+Tuning values are never persisted — both tuning panels initialize from hardcoded defaults every time they open, not from what was last applied. ESP32 reboot or server restart = config loss with no way to recover.
+maxTiltAngle default mismatch — settingsStore.ts defaults to 45°, ControlDrawer defaults to 45°, but ControlDialogs.ThresholdsDialog defaults to 14°. Whichever panel the operator first opens before ever saving will show a different safety limit than what's actually enforced.
+ThresholdsDialog state doesn't sync after server data loads — useState initializes once at render time; if settings hasn't fetched yet it locks onto the fallback and never updates.
+Serial write body field mismatch — ControlDrawer.TuningPanel sends { data: command }, ControlDialogs.TuningDialog sends { text: command } — one of them is hitting the endpoint with the wrong key.
+Let me check the serial route first so I know which field is correct, then fix everything in one pass.

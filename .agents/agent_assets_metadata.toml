@@ -1,0 +1,26 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "B92PO-k8GHHvquBaZn9-N"
+uri = "file://attached_assets_generated/Component_Design_Chapter_3_Revised.docx"
+type = "word_document"
+title = "Component Design (Sections 3.4–3.9) — Revised"
+
+[[outputs]]
+id = "uwPHJYujyO-v8qA13Q9L-"
+uri = "file://thesis/thesis.docx"
+type = "word_document"
+title = "Thesis (Word document) — Chapter 3 Component Design & Analysis renumbered"
+
+[[outputs]]
+id = "yaVrEeS0ROV5uVHdBf7UD"
+uri = "file://thesis/Chapter3_Section_3.1_3.2.docx"
+type = "word_document"
+title = "Section 3.1 & 3.2 — Component Design and Component Analysis (Word)"
+
+[[outputs]]
+id = "_YZjLt2upbm9rTIGmZx-t"
+uri = "file://being_worked_on/Chapter3_326_onwards_improved.docx"
+type = "word_document"
+title = "Chapter 3 — Sections 3.2.6–3.2.8 (Improved)"

@@ -1,0 +1,60 @@
+name: Build Desktop App (Electron)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    name: Windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Install workspace dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build API server (Node bundle)
+        run: pnpm --filter @workspace/api-server run build
+
+      # BASE_PATH must be "./" (relative) so assets load correctly when
+      # Electron opens the file via file:// — absolute "/" paths break.
+      - name: Build React frontend (Vite)
+        env:
+          BASE_PATH: "./"
+          PORT: "21211"
+          NODE_ENV: "production"
+        run: pnpm --filter @workspace/gyro-dashboard run build
+
+      # desktop/ is NOT a pnpm workspace package — use npm directly.
+      - name: Install Electron / electron-builder
+        working-directory: desktop
+        run: npm install
+
+      - name: Build Windows installer (.exe)
+        working-directory: desktop
+        run: npm run dist:win
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: GyroMonitor-Windows-Installer
+          path: |
+            desktop/dist/**/*.exe
+            !desktop/dist/win-unpacked/**
+          if-no-files-found: warn
+          retention-days: 30

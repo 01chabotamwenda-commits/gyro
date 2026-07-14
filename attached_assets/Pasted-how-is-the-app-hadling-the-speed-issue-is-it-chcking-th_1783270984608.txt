@@ -1,0 +1,25 @@
+how is the app hadling the speed issue, is it chcking the rpm against the pulse send to the esc? like if i set the idle or minimum speed to be 3000 rpm, how does it ensure when i clik on EQ that the speed reaches the set required speed?
+
+2 minutes ago
+Inferring control strategy
+
+Inferring control strategy
+This is an architecture question worth explaining clearly before touching any code.
+
+What the current implementation does — open-loop
+
+The SpeedDialog sends CMD:SET_IDLE:<pulse> (e.g. CMD:SET_IDLE:1500). The ESP32 takes that microsecond value and writes it directly to the ESC as a PWM signal. That's it — one-way. There's no feedback loop on the dashboard side. The actual RPM you get depends on motor load, battery voltage, and the ESC's own calibration curve, none of which are constant.
+
+So if you type 1500µs and press EQ, the ESC gets told "run at 1500µs duty cycle" — it might produce 2800 RPM under load, 3200 RPM unloaded. The dashboard has no way to know or correct this.
+
+What the firmware already has — closed-loop
+
+Looking at the existing API, there's already a separate mechanism:
+
+POST /api/motor/setpoint with mode: "manual" sends CMD:MANUAL_RPM:<value> to the ESP32
+CMD:SET_AUTO switches the firmware back to its built-in PID loop
+This implies the ESP32 firmware has a PID controller that reads actual RPM (from the gyro/encoder) and adjusts the ESC pulse width itself to reach and hold the target. That's closed-loop — if the motor falls short of 3000 RPM under load, the firmware increases the pulse until it gets there.
+
+What this means for the speed dialog
+
+The speed dialog you asked for is useful for setting a raw baseline pulse (e.g. "at rest, don't let the ESC go below 1200µs"). That's a different concept from "run at exactly 3000 RPM." If the intent is the latter — specify a target RPM and have the firmware hold it — the dialog should send CMD:MANUAL_RPM:<value> via the existing /api/motor/setpoint endpoint instead of the raw pulse command.

@@ -3,13 +3,23 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Gyroscope real-time monitoring API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: session
+    description: Gyroscope monitoring session
+  - name: readings
+    description: Sensor readings
+  - name: motor
+    description: Motor control commands
+  - name: settings
+    description: System configuration
+  - name: sdcard
+    description: SD card data storage
 paths:
   /healthz:
     get:
@@ -24,8 +34,437 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /session:
+    get:
+      operationId: getSession
+      tags: [session]
+      summary: Get current monitoring session
+      description: Returns current session info including runtime, status, and target
+      responses:
+        "200":
+          description: Current session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+    post:
+      operationId: startSession
+      tags: [session]
+      summary: Start a new monitoring session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionInput"
+      responses:
+        "201":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+    delete:
+      operationId: stopSession
+      tags: [session]
+      summary: Stop the current session
+      responses:
+        "200":
+          description: Session stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /session/reset:
+    post:
+      operationId: resetSession
+      tags: [session]
+      summary: Reset the current session in place
+      description: Keeps the same session id/targets but sets a fresh start time (elapsed → 0) and deletes that session's stored readings. Motor state is untouched.
+      responses:
+        "200":
+          description: Session reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /readings/latest:
+    get:
+      operationId: getLatestReading
+      tags: [readings]
+      summary: Get the most recent sensor reading
+      responses:
+        "200":
+          description: Latest sensor reading
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SensorReading"
+
+  /readings/history:
+    get:
+      operationId: getReadingHistory
+      tags: [readings]
+      summary: Get recent sensor reading history
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+          description: Number of readings to return (max 2000)
+        - name: sinceMinutes
+          in: query
+          schema:
+            type: integer
+          description: Return readings from the last N minutes (overrides limit when both provided)
+        - name: metric
+          in: query
+          schema:
+            type: string
+            enum: [tiltX, tiltY, rotationZ, rpm, temperature]
+          description: Filter to a specific metric
+      responses:
+        "200":
+          description: Sensor reading history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SensorReading"
+
+  /readings/stats:
+    get:
+      operationId: getReadingStats
+      tags: [readings]
+      summary: Get aggregate statistics for the current session
+      responses:
+        "200":
+          description: Session statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStats"
+
+  /motor/command:
+    post:
+      operationId: sendMotorCommand
+      tags: [motor]
+      summary: Send a command to the motor controller
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MotorCommandInput"
+      responses:
+        "200":
+          description: Command acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MotorCommandResponse"
+
+  /alerts:
+    get:
+      operationId: getAlerts
+      tags: [session]
+      summary: Get recent system alerts
+      responses:
+        "200":
+          description: Recent alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Alert"
+
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get current system settings
+      responses:
+        "200":
+          description: Current settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+    put:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Update system settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsInput"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+
+  /motor/setpoint:
+    post:
+      operationId: setMotorSetpoint
+      tags: [motor]
+      summary: Set manual RPM target or switch back to auto mode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManualRpmInput"
+      responses:
+        "200":
+          description: Setpoint applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManualRpmResponse"
+        "400":
+          description: Invalid input
+
+  /motor/pid:
+    post:
+      operationId: setPidEnabled
+      tags: [motor]
+      summary: Toggle PID auto-stabilization on/off without changing the current throttle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PidToggleInput"
+      responses:
+        "200":
+          description: PID mode toggled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PidToggleResponse"
+        "400":
+          description: Invalid input
+
+  /sdcard:
+    get:
+      operationId: getSdCardStatus
+      tags: [sdcard]
+      summary: Get SD card storage status
+      responses:
+        "200":
+          description: SD card status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdCardStatus"
+
+  /sdcard/sync:
+    post:
+      operationId: syncSdCard
+      tags: [sdcard]
+      summary: Trigger SD card data resync
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdCardSyncResult"
+
+  /sdcard/toggle:
+    post:
+      operationId: toggleSdCard
+      tags: [sdcard]
+      summary: Simulate SD card connect/disconnect (demo)
+      responses:
+        "200":
+          description: New SD card status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdCardStatus"
+
+  /connectivity:
+    get:
+      operationId: getConnectivity
+      tags: [connectivity]
+      summary: Get current ESP32 connection status
+      responses:
+        "200":
+          description: Live connectivity status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectivityStatus"
+
+  /connectivity/config:
+    get:
+      operationId: getConnectivityConfig
+      tags: [connectivity]
+      summary: Get stored connectivity configuration
+      responses:
+        "200":
+          description: Connectivity configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectivityConfig"
+    put:
+      operationId: updateConnectivityConfig
+      tags: [connectivity]
+      summary: Update connectivity configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectivityConfigInput"
+      responses:
+        "200":
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectivityConfig"
+
+  /capabilities:
+    get:
+      operationId: getCapabilities
+      tags: [health]
+      summary: Get current hardware sensor capabilities and device info
+      responses:
+        "200":
+          description: Capability map and optional device info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilitiesResponse"
+
+  /serial/device-info:
+    post:
+      operationId: postDeviceInfo
+      tags: [health]
+      summary: Register parsed DEVICE_INFO / HEALTH handshake from firmware
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceInfoInput"
+      responses:
+        "200":
+          description: Capabilities derived from device info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, capabilities]
+                properties:
+                  ok:
+                    type: boolean
+                  capabilities:
+                    $ref: "#/components/schemas/Capabilities"
+
+  /readings/reset-ref:
+    post:
+      operationId: resetAngleRef
+      tags: [readings]
+      summary: Set current angle as the new zero reference
+      description: Captures the current tiltX/tiltY as the new reference. All subsequent readings report deviation from this baseline.
+      responses:
+        "200":
+          description: Reference angles set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AngleRefStatus"
+
+  /readings/angle-ref:
+    get:
+      operationId: getAngleRef
+      tags: [readings]
+      summary: Get the current angle reference
+      responses:
+        "200":
+          description: Current reference angles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AngleRefStatus"
+
+  /data-mode:
+    get:
+      operationId: getDataMode
+      tags: [health]
+      summary: Get current data mode
+      responses:
+        "200":
+          description: Current mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataMode"
+    post:
+      operationId: setDataMode
+      tags: [health]
+      summary: Set data mode (demo simulator or real hardware)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DataModeInput"
+      responses:
+        "200":
+          description: Mode applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataMode"
+        "400":
+          description: Invalid mode
+
 components:
   schemas:
+    AngleRefStatus:
+      type: object
+      required: [ok, refX, refY]
+      properties:
+        ok:
+          type: boolean
+        refX:
+          type: number
+          description: X-axis reference angle (degrees)
+        refY:
+          type: number
+          description: Y-axis reference angle (degrees)
+
+    DataMode:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [demo, real]
+
+    DataModeInput:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [demo, real]
     HealthStatus:
       type: object
       properties:
@@ -34,3 +473,576 @@ components:
       required:
         - status
 
+    Session:
+      type: object
+      required: [id, status, startedAt, targetRpm, targetDurationHours, motorState]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [idle, running, warning, error, completed]
+        startedAt:
+          type: ["string", "null"]
+        stoppedAt:
+          type: ["string", "null"]
+        targetRpm:
+          type: integer
+        targetDurationHours:
+          type: integer
+        elapsedSeconds:
+          type: ["integer", "null"]
+        motorState:
+          type: string
+          enum: [on, off, emergency_stopped]
+
+    MotorCommandInput:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+          enum: [on, off, emergency_stop]
+
+    MotorCommandResponse:
+      type: object
+      required: [ok, motorState, message]
+      properties:
+        ok:
+          type: boolean
+        motorState:
+          type: string
+          enum: [on, off, emergency_stopped]
+        message:
+          type: string
+
+    SessionInput:
+      type: object
+      required: [targetRpm, targetDurationHours]
+      properties:
+        targetRpm:
+          type: integer
+        targetDurationHours:
+          type: integer
+
+    SensorReading:
+      type: object
+      required: [id, timestamp, tiltX, tiltY, rotationZ, rpm, temperature, motorPwm]
+      properties:
+        id:
+          type: integer
+        timestamp:
+          type: string
+        tiltX:
+          type: number
+          description: X-axis tilt angle in degrees
+        tiltY:
+          type: number
+          description: Y-axis tilt angle in degrees
+        rotationZ:
+          type: number
+          description: Z-axis rotation rate in deg/s
+        rpm:
+          type: number
+          description: Flywheel RPM
+        temperature:
+          type: number
+          description: System temperature in Celsius
+        motorPwm:
+          type: number
+          description: Motor PWM duty cycle 0-100%
+        vibration:
+          type: number
+          description: Vibration magnitude (RMS acceleration from the IMU when available, otherwise an RPM-derived estimate)
+        filteredAngleX:
+          type: number
+          description: Kalman-filtered X tilt angle in degrees (pre reference-subtraction, unlike tiltX which is the error term)
+        filteredAngleY:
+          type: number
+          description: Kalman-filtered Y tilt angle in degrees (pre reference-subtraction, unlike tiltY which is the error term)
+        motorPulseUs:
+          type: number
+          description: Actual ESC pulse width sent to the motor, in microseconds
+
+    SessionStats:
+      type: object
+      required: [avgRpm, maxRpm, minRpm, avgTiltX, avgTiltY, avgTemperature, maxTemperature, totalReadings, uptimePercent]
+      properties:
+        avgRpm:
+          type: number
+        maxRpm:
+          type: number
+        minRpm:
+          type: number
+        avgTiltX:
+          type: number
+        avgTiltY:
+          type: number
+        avgTemperature:
+          type: number
+        maxTemperature:
+          type: number
+        totalReadings:
+          type: integer
+        uptimePercent:
+          type: number
+
+    Alert:
+      type: object
+      required: [id, timestamp, level, message]
+      properties:
+        id:
+          type: integer
+        timestamp:
+          type: string
+        level:
+          type: string
+          enum: [info, warning, error, critical, emergency]
+        message:
+          type: string
+        sessionId:
+          type: integer
+          nullable: true
+          description: Hardware session this alert belongs to (null for system-level alerts not tied to a session)
+
+    Settings:
+      type: object
+      required: [targetRpm, targetDurationHours, maxTiltAngle, tempWarnThreshold, tempCritThreshold, vibWarnThreshold, vibCritThreshold, pidKp, pidKi, pidKd, pidSetpointDeg, pidDeadbandDeg, pidIntegralMax, pidBaseThrottle, rampUpRpmPerSec, rampDownRpmPerSec, pwmFrequencyHz, pwmDeadbandPercent, maxRpmLimit, enforceTilt, enforceTempCrit, enforceVibCrit]
+      properties:
+        targetRpm:
+          type: integer
+          description: Default target flywheel RPM
+        targetDurationHours:
+          type: number
+          description: Default session duration in hours
+        maxTiltAngle:
+          type: number
+          description: Maximum allowed tilt angle before emergency stop (degrees)
+        tempWarnThreshold:
+          type: number
+          description: Temperature warning threshold (Celsius)
+        tempCritThreshold:
+          type: number
+          description: Temperature critical / emergency stop threshold (Celsius)
+        vibWarnThreshold:
+          type: number
+          description: Vibration warning threshold (mm/s)
+        vibCritThreshold:
+          type: number
+          description: Vibration critical / emergency stop threshold (mm/s)
+        enforceTilt:
+          type: boolean
+          description: When true, tilt breach triggers emergency stop; when false, fires a warning alert only
+        enforceTempCrit:
+          type: boolean
+          description: When true, critical temperature triggers emergency stop; when false, fires a warning alert only
+        enforceVibCrit:
+          type: boolean
+          description: When true, critical vibration triggers emergency stop; when false, fires a warning alert only
+        pidKp:
+          type: number
+          description: ESP32 PID proportional gain
+        pidKi:
+          type: number
+          description: ESP32 PID integral gain
+        pidKd:
+          type: number
+          description: ESP32 PID derivative gain
+        pidSetpointDeg:
+          type: number
+          description: PID target tilt angle (degrees, 0 = level)
+        pidDeadbandDeg:
+          type: number
+          description: PID dead-band — tilt errors below this are ignored (degrees)
+        pidIntegralMax:
+          type: number
+          description: PID anti-windup clamp on the integral term (throttle µs)
+        pidBaseThrottle:
+          type: integer
+          description: "PID idle/base throttle (µs). The incremental controller adds/subtracts from this floor. Range: 1050–1800."
+        armThrottleUs:
+          type: integer
+          description: "Starting pulse — the ESC armed-but-not-spinning pulse width sent whenever the motor is off (µs). Must stay below minThrottleUs."
+        rampUpRpmPerSec:
+          type: number
+          description: Motor acceleration ramp (RPM/s)
+        rampDownRpmPerSec:
+          type: number
+          description: Motor deceleration ramp (RPM/s)
+        pwmFrequencyHz:
+          type: number
+          description: Motor driver PWM frequency (Hz)
+        pwmDeadbandPercent:
+          type: number
+          description: Motor driver PWM deadband (%)
+        maxRpmLimit:
+          type: number
+          description: ESP32 firmware hard RPM ceiling
+        motorSpeedStepUs:
+          type: number
+          description: Manual throttle step for Speed Up/Down, keyboard h/l, and IR VOL+/VOL- (µs)
+        minThrottleUs:
+          type: number
+          description: Safety-bound minimum throttle clamped on every manual/PID write (µs)
+        maxThrottleUs:
+          type: number
+          description: Safety-bound maximum throttle clamped on every manual/PID write (µs)
+        irKpStep:
+          type: number
+          description: IR remote PID-tuning increment for Kp (buttons 1/4)
+        irKiStep:
+          type: number
+          description: IR remote PID-tuning increment for Ki (buttons 2/5)
+        irKdStep:
+          type: number
+          description: IR remote PID-tuning increment for Kd (buttons 3/6)
+        irKnlStep:
+          type: number
+          description: IR remote PID-tuning increment for the nonlinear boost factor
+        autoNlThreshDeg:
+          type: number
+          description: Tilt angle above which the nonlinear boost term activates (degrees)
+        autoMinRpm:
+          type: number
+          description: Minimum flywheel RPM required to allow auto (balance) mode
+        autoMaxCorrectionUs:
+          type: number
+          description: PID output saturation / anti-windup clamp (µs)
+        rpmTimeoutMs:
+          type: number
+          description: Time without an RPM pulse before the sensor is considered stalled (ms)
+        rpmReportIntervalMs:
+          type: number
+          description: RPM sensor reporting interval (ms)
+        telemetryIntervalMs:
+          type: number
+          description: Telemetry (sensor readings) reporting interval (ms)
+
+    SettingsInput:
+      type: object
+      properties:
+        targetRpm:
+          type: integer
+        targetDurationHours:
+          type: number
+        maxTiltAngle:
+          type: number
+        tempWarnThreshold:
+          type: number
+        tempCritThreshold:
+          type: number
+        vibWarnThreshold:
+          type: number
+        vibCritThreshold:
+          type: number
+        enforceTilt:
+          type: boolean
+        enforceTempCrit:
+          type: boolean
+        enforceVibCrit:
+          type: boolean
+        pidKp:
+          type: number
+        pidKi:
+          type: number
+        pidKd:
+          type: number
+        pidSetpointDeg:
+          type: number
+        pidDeadbandDeg:
+          type: number
+        pidIntegralMax:
+          type: number
+        pidBaseThrottle:
+          type: integer
+          description: "PID idle/base throttle (µs). Range: 1050–1800."
+        armThrottleUs:
+          type: integer
+          description: "Starting pulse (µs). Must stay below minThrottleUs."
+        rampUpRpmPerSec:
+          type: number
+        rampDownRpmPerSec:
+          type: number
+        pwmFrequencyHz:
+          type: number
+        pwmDeadbandPercent:
+          type: number
+        maxRpmLimit:
+          type: number
+        motorSpeedStepUs:
+          type: number
+        minThrottleUs:
+          type: number
+        maxThrottleUs:
+          type: number
+        irKpStep:
+          type: number
+        irKiStep:
+          type: number
+        irKdStep:
+          type: number
+        irKnlStep:
+          type: number
+        autoNlThreshDeg:
+          type: number
+        autoMinRpm:
+          type: number
+        autoMaxCorrectionUs:
+          type: number
+        rpmTimeoutMs:
+          type: number
+        rpmReportIntervalMs:
+          type: number
+        telemetryIntervalMs:
+          type: number
+
+    SdCardStatus:
+      type: object
+      required: [connected, recordsOnCard, lastSyncAt, syncPending, totalSynced]
+      properties:
+        connected:
+          type: boolean
+        recordsOnCard:
+          type: integer
+        totalSynced:
+          type: integer
+        lastSyncAt:
+          type: ["string", "null"]
+        syncPending:
+          type: boolean
+
+    SdCardSyncResult:
+      type: object
+      required: [ok, recordsSynced, message, lastSyncAt]
+      properties:
+        ok:
+          type: boolean
+        recordsSynced:
+          type: integer
+        message:
+          type: string
+        lastSyncAt:
+          type: string
+
+    ConnectivityStatus:
+      type: object
+      required: [mode, connected, mac, firmwareVersion, uptimeSeconds]
+      properties:
+        mode:
+          type: string
+          enum: [wifi_sta, wifi_ap, ble, usb, none]
+        connected:
+          type: boolean
+        mac:
+          type: ["string", "null"]
+          description: Device MAC address
+        ip:
+          type: ["string", "null"]
+          description: Device IP address (null for BLE/none)
+        ssid:
+          type: ["string", "null"]
+          description: Connected SSID (STA) or AP SSID (AP mode)
+        port:
+          type: ["string", "null"]
+          description: Serial port path (USB mode only)
+        rssi:
+          type: ["integer", "null"]
+          description: WiFi signal strength in dBm (negative; closer to 0 is stronger)
+        signalQuality:
+          type: ["string", "null"]
+          description: Human label for RSSI (Excellent / Good / Fair / Weak / Very Weak)
+        apClients:
+          type: ["integer", "null"]
+          description: Number of connected clients (AP mode only)
+        bleDevice:
+          type: ["string", "null"]
+          description: Name of paired BLE device (BLE mode only)
+        firmwareVersion:
+          type: ["string", "null"]
+        uptimeSeconds:
+          type: integer
+
+    ConnectivityConfig:
+      type: object
+      required: [mode, wifiSsid, wifiPasswordSet, wifiUseStaticIp, apSsid, apChannel, apMaxConn, bleName]
+      properties:
+        mode:
+          type: string
+          enum: [wifi_sta, wifi_ap, ble, usb, none]
+        wifiSsid:
+          type: string
+        wifiPasswordSet:
+          type: boolean
+          description: True if a WiFi password is stored on the device
+        wifiUseStaticIp:
+          type: boolean
+        wifiStaticIp:
+          type: ["string", "null"]
+        wifiSubnet:
+          type: ["string", "null"]
+        wifiGateway:
+          type: ["string", "null"]
+        apSsid:
+          type: string
+        apChannel:
+          type: integer
+          description: WiFi channel 1-13
+        apMaxConn:
+          type: integer
+          description: Maximum simultaneous AP clients (1-5)
+        bleName:
+          type: string
+          description: Advertised BLE device name
+
+    Capabilities:
+      type: object
+      required: [imu, motor, temperature, vibration, sdcard]
+      properties:
+        imu:
+          type: boolean
+          description: MPU6050 / IMU / tilt sensor present
+        motor:
+          type: boolean
+          description: ESC / motor controller present
+        temperature:
+          type: boolean
+          description: Temperature sensor present
+        vibration:
+          type: boolean
+          description: Vibration sensor present
+        sdcard:
+          type: boolean
+          description: SD card module present
+
+    DeviceInfoInput:
+      type: object
+      properties:
+        deviceId:
+          type: string
+        version:
+          type: string
+        baud:
+          type: integer
+        components:
+          type: array
+          items:
+            type: string
+        health:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [OK, FAIL, UNKNOWN]
+
+    DeviceInfo:
+      type: object
+      required: [deviceId, version, baud, port, components, capabilities, health, connectedAt]
+      properties:
+        deviceId:
+          type: string
+        version:
+          type: string
+        baud:
+          type: integer
+        port:
+          type: string
+        components:
+          type: array
+          items:
+            type: string
+        capabilities:
+          $ref: "#/components/schemas/Capabilities"
+        health:
+          type: object
+          additionalProperties:
+            type: string
+        connectedAt:
+          type: string
+
+    CapabilitiesResponse:
+      type: object
+      required: [capabilities]
+      properties:
+        capabilities:
+          $ref: "#/components/schemas/Capabilities"
+        deviceInfo:
+          oneOf:
+            - $ref: "#/components/schemas/DeviceInfo"
+            - type: "null"
+
+    ManualRpmInput:
+      type: object
+      required: [targetRpm, mode]
+      properties:
+        targetRpm:
+          type: integer
+          minimum: 0
+          maximum: 12000
+          description: Target flywheel RPM for manual control (0 = stop)
+        mode:
+          type: string
+          enum: [auto, manual]
+          description: auto = PID loop controls RPM; manual = direct RPM setpoint
+
+    ManualRpmResponse:
+      type: object
+      required: [ok, targetRpm, mode, message]
+      properties:
+        ok:
+          type: boolean
+        targetRpm:
+          type: integer
+        mode:
+          type: string
+          enum: [auto, manual]
+        message:
+          type: string
+
+    PidToggleInput:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: true = enable PID auto-stabilization; false = disable (holds current throttle)
+
+    PidToggleResponse:
+      type: object
+      required: [ok, mode, message]
+      properties:
+        ok:
+          type: boolean
+        mode:
+          type: string
+          enum: [auto, manual]
+        message:
+          type: string
+
+    ConnectivityConfigInput:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [wifi_sta, wifi_ap, ble, usb, none]
+        wifiSsid:
+          type: string
+        wifiPassword:
+          type: string
+          description: Only send when changing the password
+        wifiUseStaticIp:
+          type: boolean
+        wifiStaticIp:
+          type: string
+        wifiSubnet:
+          type: string
+        wifiGateway:
+          type: string
+        apSsid:
+          type: string
+        apPassword:
+          type: string
+        apChannel:
+          type: integer
+        apMaxConn:
+          type: integer
+        bleName:
+          type: string

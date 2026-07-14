@@ -1,0 +1,1622 @@
+/**
+ * gyro_controller.ino — ESP32 IMU + ESC Controller  v3.0
+ *
+ * ─────────────────────────────────────────────────────────
+ *  QUICK-START
+ *
+ *  Step 1 — Fill in your WiFi credentials below.
+ *
+ *  Step 2 — Set SERVER_IP to the LAN IP of the PC running the app.
+ *           (Run `ipconfig` on Windows or `ifconfig` on Linux/Mac.)
+ *
+ *  Step 3 — Upload once over USB. After that, all subsequent uploads
+ *           can be done wirelessly via the dashboard (OTA).
+ *
+ *  USB and WiFi work simultaneously — no recompile needed to switch.
+ *  If WiFi is unavailable the device runs on USB serial only and
+ *  automatically reconnects when the network comes back.
+ * ─────────────────────────────────────────────────────────
+ */
+
+// ── WiFi credentials ──────────────────────────────────────────────────────────
+#define STA_SSID     "TECNO CAMON 20"       // your local WiFi
+#define STA_PASSWORD "14567890"             // WiFi password
+#define SERVER_IP    "10.133.87.126"        // PC IP (run ipconfig to verify)
+#define SERVER_PORT  5001                   // TCP port (must match app server)
+
+// ── Fallback AP (created if STA join fails) ───────────────────────────────────
+#define AP_SSID      "GyroMonitor"
+#define AP_PASSWORD  "gyro1234"
+
+// ── Hardware presence flags ───────────────────────────────────────────────────
+// Enable the hardware paths that are actually wired up. Leaving these at 0
+// causes the firmware to skip the MPU/ESC logic entirely, which is why the
+// board appeared to be running a different firmware profile.
+#define HAS_MPU6050     1   // MPU-6050 IMU (tilt X/Y, vibration)
+#define HAS_ESC         1   // ESC + brushless motor
+#define HAS_RPM_SENSOR  1   // HW201 / IR pulse sensor on GPIO16
+#define HAS_TEMP_SENSOR 0   // dedicated temperature sensor (DS18B20/NTC/etc.)
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <math.h>
+#include <arduinoFFT.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WebServer.h>
+#include <ArduinoOTA.h>
+#include <Update.h>
+#include <IRremote.hpp>
+
+// ── MPU-6050 registers ────────────────────────────────────────────────────────
+#define MPU6050_ADDR  0x68
+#define ACCEL_XOUT_H  0x3B
+#define GYRO_XOUT_H   0x43
+#define PWR_MGMT_1    0x6B
+#define ACCEL_CONFIG  0x1C
+#define GYRO_CONFIG   0x1B
+
+// ── Pin definitions ───────────────────────────────────────────────────────────
+#define ESC_PIN        4
+#define RESET_BUTTON  23
+#define IR_RECEIVE_PIN 17          // VS1838B IR receiver signal pin
+#define RPM_SENSOR_PIN 16          // TCRT5000 pulse sensor pin
+#define ONBOARD_LED    2           // Blue LED on ESP32 dev board
+
+// ── Motor / ESC settings ──────────────────────────────────────────────────────
+const int MOTOR_SPEED_STEP   = 50;
+const int RAMP_STEP_MS       = 12;
+const int RAMP_STEP_US       = 5;
+const int MIN_THROTTLE       = 1400;
+const int ARM_THROTTLE       = 1000;
+const int START_THROTTLE     = 1300;
+const int MAX_THROTTLE       = 2000;
+const int PWM_CHANNEL        = 0;
+const int PWM_FREQ           = 50;
+const int PWM_RESOLUTION     = 16;
+
+const uint32_t RPM_TIMEOUT_MS         = 2000;
+const uint32_t RPM_REPORT_INTERVAL_MS = 250;
+const uint32_t IR_DEBOUNCE_US         = 3000UL;
+const uint8_t  RPM_AVG_SAMPLES        = 1;
+const int      RPM_PULSES_PER_REV      = 1;
+const float    RPM_MIN_VALID_RPM       = 5.0f;
+const float    RPM_MAX_VALID_RPM       = 6000.0f;
+
+// ── IMU raw values ────────────────────────────────────────────────────────────
+int16_t accelX, accelY, accelZ;
+int16_t gyroX,  gyroY,  gyroZ;
+float   accelX_g, accelY_g, accelZ_g;
+float   gyroX_dps, gyroY_dps, gyroZ_dps;
+
+// ── MPU fault tracking ────────────────────────────────────────────────────────
+bool    mpuOk          = false;
+uint8_t mpuFailStreak  = 0;
+const uint8_t MPU_MAX_FAILS = 5;   // declare fault after 5 consecutive read failures
+
+// ── Kalman filter state ───────────────────────────────────────────────────────
+float kalmanAngleX = 0.0, kalmanBiasX = 0.0;
+float kalmanP_X[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+float kalmanAngleY = 0.0, kalmanBiasY = 0.0;
+float kalmanP_Y[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+float kalmanAngleZ = 0.0, kalmanBiasZ = 0.0;
+float kalmanP_Z[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+const float Q_angle   = 0.001f;
+const float Q_bias    = 0.003f;
+const float R_measure = 0.03f;
+
+unsigned long lastUpdateTime = 0;
+bool angleInitialized = false;
+
+// ── Reference / error angles ──────────────────────────────────────────────────
+float current_angleX = 0.0, current_angleY = 0.0, current_angleZ = 0.0;
+float refAngleX = 0.0,      refAngleY = 0.0,      refAngleZ = 0.0;
+float error_X = 0.0,        error_Y = 0.0,        error_Z = 0.0;
+bool  initialized = false;
+
+// ── Motor state ───────────────────────────────────────────────────────────────
+bool  motorRunning = false;
+int   motorThrottle = ARM_THROTTLE;
+bool  motorRamping = false;
+int   motorRampTarget = ARM_THROTTLE;
+unsigned long lastRampMs = 0;
+
+// ── Tilt-stabilisation PID (auto-throttle) ──────────────────────────────────
+// Architecture:  tilt error -> PID -> throttle
+//   throttle = MIN_THROTTLE + Kp*error + Ki*integral(error) + Kd*d(error)/dt
+//
+// No RPM inner loop: the RPM sensor updates every RPM_REPORT_INTERVAL_MS
+// (250 ms) which is far slower than the PID's control tick, so RPM can't be
+// used as the feedback signal for a fast loop. Tilt (from the IMU, updated
+// every loop()) is the actual feedback variable — this stabilises the rig,
+// it does not hold an exact RPM. Gains are tunable at runtime via
+// CMD:SET_PID:<kp>,<ki>,<kd> (mirrors the api-server's pidKp/pidKi/pidKd
+// settings) so no reflash is needed while tuning.
+bool  autoMode        = false;   // false = manual (direct pulse/RPM commands), true = PID-driven
+float pidKp           = 25.0f;
+float pidKi           = 2.0f;
+float pidKd           = 0.5f;
+const float PID_INTEGRAL_MAX = 200.0f;               // anti-windup clamp [throttle us]
+const float PID_OUTPUT_MAX   = MAX_THROTTLE - MIN_THROTTLE; // max throttle increase above MIN_THROTTLE
+const float PID_TILT_DEADBAND_DEG = 0.5f;
+float pidIntegral     = 0.0f;
+float pidPrevError    = 0.0f;
+float pidDerivative    = 0.0f;
+bool  pidFirstTick    = true;
+unsigned long lastPidTickMs = 0;
+float pidLastOutput   = 0.0f;   // diagnostics — last commanded throttle offset above MIN_THROTTLE
+float pidLastTilt     = 0.0f;   // diagnostics — last tilt magnitude fed into the PID
+
+// ── RPM sensor state — pulse period measurement for HW201 / IR sensor ─────
+volatile uint32_t rpmPulseCount = 0;
+volatile uint32_t rpmLastPulseMicros = 0;
+volatile uint32_t rpmLastPeriodUs = 0;
+volatile bool     rpmNewPeriod = false;
+
+uint32_t rpmValue = 0;
+float    rpmFreqHz = 0.0f;
+uint32_t rpmPeriodMs = 0;
+uint32_t lastPulseMicrosSnapshot = 0;
+uint32_t rpmPeriodBuffer[RPM_AVG_SAMPLES] = {0};
+uint8_t  rpmPeriodWriteIdx = 0;
+uint8_t  rpmPeriodCount = 0;
+float    filteredRpm = 0.0f;
+float    filteredFreqHz = 0.0f;
+uint32_t lastRpmReportMs = 0;
+uint32_t rpmTotalPulses = 0;
+
+// ── Serial command parsing ─────────────────────────────────────────────────────
+// (serialBuf and serialLen moved into processSerialInput scope for immediate-dispatch)
+
+// ── Telemetry timing ──────────────────────────────────────────────────────────
+const unsigned long TELEMETRY_INTERVAL_MS = 250;
+unsigned long lastTelemetryTime = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vibration / FFT  (64-point, 500 Hz sample rate)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#define VIBR_N          64
+#define VIBR_SAMPLE_HZ  500.0
+#define VIBR_SAMPLE_MS  2
+
+static double vibrVReal[VIBR_N];
+static double vibrVImag[VIBR_N];
+static ArduinoFFT<double> vibrFFT(vibrVReal, vibrVImag, VIBR_N, VIBR_SAMPLE_HZ);
+
+static int           vibrIdx    = 0;
+static unsigned long vibrLastMs = 0;
+
+float vibrRmsG    = 0.0f;
+float vibrFreqHz  = 0.0f;
+float vibrRpmEst  = 0.0f;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WiFi / TCP / OTA state
+// ─────────────────────────────────────────────────────────────────────────────
+
+WiFiClient    tcpClient;
+WebServer     httpServer(80);   // OTA upload + status page
+String        wifiCmdBuffer = "";
+String        lastIrCommand = "none";
+bool          wifiConnected       = false;
+bool          staJoined           = false;
+unsigned long lastWifiReconnectMs = 0;
+const unsigned long WIFI_RECONNECT_INTERVAL_MS = 5000;
+const bool    APP_SERVER_ENABLED = true;   // enable app-server (HTTP/TCP) for wireless control
+
+/** Build the COMPONENTS list from what's actually wired up (HAS_* flags). */
+String connectedComponentsList() {
+  String c = "IR";
+#if HAS_MPU6050
+  c += ",MPU6050";
+#endif
+#if HAS_ESC
+  c += ",ESC";
+#endif
+#if HAS_RPM_SENSOR
+  c += ",RPM_SENSOR";
+#endif
+#if HAS_TEMP_SENSOR
+  c += ",TEMP_SENSOR";
+#endif
+  return c;
+}
+
+// ── HTTP handlers ─────────────────────────────────────────────────────────────
+
+const char INDEX_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GyroMonitor ESP32</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; text-align: center; background: #111; color: #eee; margin: 0; padding: 20px; }
+    h1 { font-size: 1.3em; margin-bottom: 4px; }
+    .subtitle { font-size: 0.8em; color: #888; margin-bottom: 18px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 420px; margin: 0 auto 18px; }
+    .card { background: #1e1e1e; border-radius: 10px; padding: 12px 8px; }
+    .card .label { font-size: 0.72em; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+    .card .value { font-size: 1.7em; font-weight: bold; color: #4fc3f7; margin-top: 2px; }
+    .card .unit  { font-size: 0.75em; color: #aaa; }
+    .card.warn .value { color: #ef5350; }
+    .card.ok   .value { color: #66bb6a; }
+    .buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 420px; margin: 0 auto 14px; }
+    button {
+      font-size: 1.05em; padding: 14px 20px; border: none;
+      border-radius: 10px; color: white; min-width: 100px; cursor: pointer;
+    }
+    #btn-start  { background: #2e7d32; }
+    #btn-stop   { background: #c62828; }
+    #btn-up     { background: #1565c0; }
+    #btn-down   { background: #6a1b9a; }
+    #btn-reset  { background: #e65100; }
+    .status-bar { font-size: 0.85em; color: #888; margin-top: 8px; }
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.78em; font-weight: bold; }
+    .pill.run  { background: #1b5e20; color: #a5d6a7; }
+    .pill.stop { background: #311; color: #ef9a9a; }
+    .pill.fault{ background: #4a1900; color: #ffab91; }
+  </style>
+</head>
+<body>
+  <h1>GyroMonitor ESP32</h1>
+  <p class="subtitle">v3.0 — direct HTTP interface</p>
+
+  <div class="grid">
+    <div class="card"><div class="label">RPM</div><div class="value" id="rpm">--</div></div>
+    <div class="card"><div class="label">Vibration</div><div class="value" id="vib">--</div><div class="unit">g RMS</div></div>
+    <div class="card"><div class="label">Tilt X</div><div class="value" id="tx">--</div><div class="unit">deg</div></div>
+    <div class="card"><div class="label">Tilt Y</div><div class="value" id="ty">--</div><div class="unit">deg</div></div>
+    <div class="card"><div class="label">PWM</div><div class="value" id="pwm">--</div><div class="unit">%</div></div>
+    <div class="card"><div class="label">IR</div><div class="value" id="ir">--</div></div>
+    <div class="card" id="mpu-card"><div class="label">MPU-6050</div><div class="value" id="mpu">--</div></div>
+  </div>
+
+  <div class="buttons">
+    <button id="btn-start" onclick="cmd('start')">&#9654; Start</button>
+    <button id="btn-stop"  onclick="cmd('stop')">&#9632; Stop</button>
+    <button id="btn-up"    onclick="cmd('up')">&#8679; Speed +</button>
+    <button id="btn-down"  onclick="cmd('down')">&#8681; Speed −</button>
+    <button id="btn-reset" onclick="cmd('resetref')">&#8635; Reset Ref</button>
+  </div>
+
+  <div class="status-bar">
+    Status: <span id="running-pill" class="pill stop">STOPPED</span>
+    &nbsp;|&nbsp; Throttle: <span id="thr">--</span>
+  </div>
+
+  <script>
+    function cmd(c) { fetch('/' + c).catch(console.error); }
+    function poll() {
+      fetch('/status').then(r => r.json()).then(d => {
+        document.getElementById('rpm').textContent  = d.rpm.toFixed(0);
+        document.getElementById('vib').textContent  = d.vibration.toFixed(3);
+        document.getElementById('tx').textContent   = d.tiltX.toFixed(1);
+        document.getElementById('ty').textContent   = d.tiltY.toFixed(1);
+        document.getElementById('pwm').textContent  = d.pwmPct.toFixed(1);
+        document.getElementById('ir').textContent   = d.irCommand || '--';
+        document.getElementById('thr').textContent  = d.throttle;
+        var pill = document.getElementById('running-pill');
+        if (d.running) { pill.className = 'pill run'; pill.textContent = 'RUNNING'; }
+        else           { pill.className = 'pill stop'; pill.textContent = 'STOPPED'; }
+        var mpuEl   = document.getElementById('mpu');
+        var mpuCard = document.getElementById('mpu-card');
+        if (d.mpuFault) {
+          mpuEl.textContent = 'FAULT'; mpuCard.className = 'card warn';
+        } else {
+          mpuEl.textContent = 'OK'; mpuCard.className = 'card ok';
+        }
+      }).catch(console.error);
+    }
+    setInterval(poll, 300);
+    poll();
+    document.addEventListener('keydown', e => {
+      if (e.key === 's') cmd('start');
+      else if (e.key === 'x' || e.key === 'Escape') cmd('stop');
+      else if (e.key === 'h') cmd('up');
+      else if (e.key === 'l') cmd('down');
+      else if (e.key === 'z') cmd('resetref');
+    });
+  </script>
+</body>
+</html>
+)HTML";
+
+void handleHttpRoot() {
+  httpServer.send_P(200, "text/html", INDEX_HTML);
+}
+
+void handleHttpStatus() {
+  float pwmPct = 0.0;
+  if (motorThrottle > ARM_THROTTLE)
+    pwmPct = (float)(motorThrottle - ARM_THROTTLE) / (MAX_THROTTLE - ARM_THROTTLE) * 100.0;
+  String json = "{\"running\":";
+  json += motorRunning ? "true" : "false";
+  json += ",\"throttle\":";  json += motorThrottle;
+  json += ",\"pwmPct\":";    json += String(pwmPct, 1);
+  json += ",\"mpuFault\":";  json += mpuOk ? "false" : "true";
+  json += ",\"rpm\":";       json += String(rpmValue);
+  json += ",\"tiltX\":";     json += String(mpuOk ? error_X : 0.0, 1);
+  json += ",\"tiltY\":";     json += String(mpuOk ? error_Y : 0.0, 1);
+  json += ",\"vibration\":"; json += String(mpuOk ? vibrRmsG : 0.0, 4);
+  json += ",\"vibFreqHz\":"; json += String(mpuOk ? vibrFreqHz : 0.0, 1);
+  json += ",\"irCommand\":\""; json += lastIrCommand; json += "\"";
+  lastIrCommand = "none";   // consume after one broadcast so it doesn't repeat every second
+  json += ",\"ip\":\"";
+  json += staJoined ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+  json += "\"}";
+  httpServer.send(200, "application/json", json);
+}
+
+// Motor control endpoints — work without the dashboard app
+void handleHttpStart() {
+  startMotor();
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpStop() {
+  stopMotor();
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpUp() {
+  if (motorRunning) setThrottleTarget(motorThrottle + MOTOR_SPEED_STEP);
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpDown() {
+  if (motorRunning) setThrottleTarget(motorThrottle - MOTOR_SPEED_STEP);
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpResetRef() {
+  resetReference();
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpEmergencyStop() {
+  emergencyStop();
+  httpServer.send(200, "text/plain", "ok");
+}
+
+/**
+ * OTA firmware upload endpoint.
+ * Dashboard POSTs the compiled binary to http://<esp32-ip>/update
+ * using Content-Type: application/octet-stream.
+ */
+void handleOtaUpload() {
+  HTTPUpload &upload = httpServer.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    Serial.printf("{\"event\":\"ota_start\",\"filename\":\"%s\"}\n", upload.filename.c_str());
+    // Stop the motor before flashing — safety first
+    if (motorRunning) {
+      stopMotor();
+    }
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      Serial.printf("{\"event\":\"ota_end\",\"bytes\":%u}\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+  }
+}
+
+void handleOtaFinish() {
+  if (Update.hasError()) {
+    httpServer.send(500, "text/plain", "OTA FAILED");
+    Serial.println("{\"event\":\"ota_error\"}");
+  } else {
+    httpServer.send(200, "text/plain", "OK — rebooting");
+    Serial.println("{\"event\":\"ota_ok\"}");
+    delay(500);
+    ESP.restart();
+  }
+}
+
+// ── WiFi init ─────────────────────────────────────────────────────────────────
+
+// Human-readable WiFi status code, since WiFi.status() failure reasons are
+// otherwise silently discarded — this is the key diagnostic for STA join failures.
+const char* wifiStatusStr(wl_status_t s) {
+  switch (s) {
+    case WL_IDLE_STATUS:     return "WL_IDLE_STATUS (still negotiating)";
+    case WL_NO_SSID_AVAIL:   return "WL_NO_SSID_AVAIL (SSID not found in range — check name/band)";
+    case WL_SCAN_COMPLETED:  return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED:       return "WL_CONNECTED";
+    case WL_CONNECT_FAILED:  return "WL_CONNECT_FAILED (auth/password rejected)";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED:    return "WL_DISCONNECTED";
+    default:                 return "UNKNOWN";
+  }
+}
+
+void initWifi() {
+  WiFi.mode(WIFI_AP_STA);   // run both STA + AP simultaneously
+  WiFi.disconnect(true);    // clear any stale STA config/credentials from a previous run
+  delay(100);
+
+  // Print a scan of nearby networks first — confirms whether the ESP32 can
+  // even see the target SSID (and on which channel/RSSI) before attempting auth.
+  Serial.println("[WiFi] Scanning nearby networks...");
+  int n = WiFi.scanNetworks();
+  bool ssidVisible = false;
+  for (int i = 0; i < n; i++) {
+    Serial.print("[WiFi]   found: '"); Serial.print(WiFi.SSID(i));
+    Serial.print("' ch="); Serial.print(WiFi.channel(i));
+    Serial.print(" rssi="); Serial.print(WiFi.RSSI(i));
+    Serial.print(" enc="); Serial.println(WiFi.encryptionType(i));
+    if (WiFi.SSID(i) == String(STA_SSID)) ssidVisible = true;
+  }
+  if (!ssidVisible) {
+    Serial.println("[WiFi] WARNING: target SSID not seen in scan — check spelling/band (ESP32 is 2.4GHz only).");
+  }
+
+  WiFi.begin(STA_SSID, STA_PASSWORD);
+
+  Serial.print("[WiFi] Connecting to '"); Serial.print(STA_SSID); Serial.print("' ");
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    staJoined = true;
+    Serial.println("[WiFi] STA connected!");
+    Serial.print("[WiFi] ESP32 IP: "); Serial.println(WiFi.localIP());
+    Serial.print("[WiFi] Server  : " SERVER_IP ":"); Serial.println(SERVER_PORT);
+  } else {
+    staJoined = false;
+    Serial.print("[WiFi] STA failed — status code: ");
+    Serial.println(wifiStatusStr(WiFi.status()));
+    Serial.println("[WiFi] AP fallback active.");
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    Serial.print("[WiFi] AP IP: "); Serial.println(WiFi.softAPIP());
+  }
+
+  // ArduinoOTA — allows Arduino IDE wireless upload as well
+  ArduinoOTA.setHostname("gyromonitor");
+  ArduinoOTA.onStart([]() {
+    Serial.println("{\"event\":\"arduinoota_start\"}");
+    if (motorRunning) {
+      stopMotor();
+    }
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("{\"event\":\"arduinoota_end\"}");
+  });
+  ArduinoOTA.onError([](ota_error_t err) {
+    Serial.printf("{\"event\":\"arduinoota_error\",\"code\":%u}\n", err);
+  });
+  ArduinoOTA.begin();
+  Serial.println("[OTA] ArduinoOTA ready (hostname: gyromonitor)");
+
+  // HTTP server — motor control page + OTA upload + status
+  httpServer.on("/",             HTTP_GET,  handleHttpRoot);
+  httpServer.on("/status",       HTTP_GET,  handleHttpStatus);
+  httpServer.on("/start",        HTTP_GET,  handleHttpStart);
+  httpServer.on("/stop",         HTTP_GET,  handleHttpStop);
+  httpServer.on("/up",           HTTP_GET,  handleHttpUp);
+  httpServer.on("/down",         HTTP_GET,  handleHttpDown);
+  httpServer.on("/resetref",     HTTP_GET,  handleHttpResetRef);
+  httpServer.on("/estop",        HTTP_GET,  handleHttpEmergencyStop);
+  httpServer.on("/update",       HTTP_POST, handleOtaFinish, handleOtaUpload);
+  httpServer.begin();
+  Serial.println("[HTTP] Server on port 80 — open http://<esp32-ip>/ for control page");
+
+  WiFi.setSleep(false);
+}
+
+// Manually force a full WiFi + app-server reconnect. Bound to a serial key
+// command ('W') for now, and shared with a CMD:WIFI_RECONNECT app command so
+// the dashboard can trigger the same recovery path automatically once it
+// detects the connection has dropped, instead of only reconnecting once
+// after a fresh flash.
+void forceWifiReconnect() {
+  Serial.println("[WiFi] Manual reconnect requested");
+  if (tcpClient.connected()) tcpClient.stop();
+  wifiConnected = false;
+  staJoined = false;
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.begin(STA_SSID, STA_PASSWORD);
+  // Reset the retry timer so maintainWifiConnection() doesn't immediately
+  // fire another attempt on top of this one.
+  lastWifiReconnectMs = millis();
+}
+
+bool connectToServer() {
+  if (tcpClient.connected()) return true;
+  if (!staJoined && WiFi.status() != WL_CONNECTED) return false;
+
+  Serial.print("[WiFi] Connecting to app server " SERVER_IP ":" + String(SERVER_PORT) + " ... ");
+  if (tcpClient.connect(SERVER_IP, SERVER_PORT)) {
+    Serial.println("OK");
+    wifiConnected = true;
+    tcpClient.println("DEVICE_INFO:esp32WiFi|VERSION:3.0|COMPONENTS:" + connectedComponentsList() + "|BAUD:0");
+    tcpClient.println(mpuOk ? "HEALTH:MPU6050=OK" : "HEALTH:MPU6050=FAIL");
+    tcpClient.println("{\"status\":\"boot\",\"msg\":\"Gyro Monitor ESP32 v3.0 — WiFi connected\"}");
+    return true;
+  }
+  Serial.println("FAILED");
+  wifiConnected = false;
+  return false;
+}
+
+void processWifiInput() {
+  while (tcpClient.available()) {
+    char c = (char)tcpClient.read();
+    if (c == '\n' || c == '\r') {
+      String line = wifiCmdBuffer;
+      wifiCmdBuffer = "";
+      line.trim();
+      if (line.length() > 0) {
+        Serial.print("[WiFi CMD] "); Serial.println(line);
+        handleAppCommand(line);
+      }
+    } else {
+      wifiCmdBuffer += c;
+      if (wifiCmdBuffer.length() > 128) wifiCmdBuffer = "";
+    }
+  }
+}
+
+void maintainWifiConnection() {
+  unsigned long now = millis();
+
+  // Detect WiFi drop and reset flag so reconnection logic fires
+  if (staJoined && WiFi.status() != WL_CONNECTED) {
+    staJoined = false;
+    Serial.println("[WiFi] STA dropped — flag cleared for reconnect");
+  }
+
+  // Attempt to re-join STA if it dropped
+  if (!staJoined && WiFi.status() != WL_CONNECTED) {
+    if (now - lastWifiReconnectMs >= WIFI_RECONNECT_INTERVAL_MS) {
+      lastWifiReconnectMs = now;
+      Serial.println("[WiFi] Retrying STA connection...");
+      WiFi.begin(STA_SSID, STA_PASSWORD);
+    }
+    return;
+  }
+
+  if (WiFi.status() == WL_CONNECTED && !staJoined) {
+    staJoined = true;
+    Serial.print("[WiFi] STA reconnected! IP: ");
+    Serial.println(WiFi.localIP());
+  }
+
+  // Reconnect TCP to app server if dropped
+  if (APP_SERVER_ENABLED && !tcpClient.connected()) {
+    if (wifiConnected) {
+      Serial.println("[WiFi] TCP connection to server lost — will retry.");
+      wifiConnected = false;
+    }
+    if (now - lastWifiReconnectMs >= WIFI_RECONNECT_INTERVAL_MS) {
+      lastWifiReconnectMs = now;
+      connectToServer();
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+void normalizeAngle(float &angle) {
+  while (angle >  180) angle -= 360;
+  while (angle < -180) angle += 360;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kalman filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+void kalmanUpdate(float &angle, float &bias, float P[2][2],
+                  float newAngle, float newRate, float dt) {
+  float rate = newRate - bias;
+  angle += dt * rate;
+  P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
+  P[0][1] -= dt * P[1][1];
+  P[1][0] -= dt * P[1][1];
+  P[1][1] += Q_bias * dt;
+  float S  = P[0][0] + R_measure;
+  float K0 = P[0][0] / S;
+  float K1 = P[1][0] / S;
+  float y  = newAngle - angle;
+  angle  += K0 * y;
+  bias   += K1 * y;
+  float P00 = P[0][0], P01 = P[0][1], P10 = P[1][0], P11 = P[1][1];
+  P[0][0] = P00 - K0 * P00;
+  P[0][1] = P01 - K0 * P01;
+  P[1][0] = P10 - K1 * P00;
+  P[1][1] = P11 - K1 * P01;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MPU-6050
+// ─────────────────────────────────────────────────────────────────────────────
+
+void initMPU6050() {
+  // Wake
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(PWR_MGMT_1);
+  Wire.write(0x00);
+  if (Wire.endTransmission(true) != 0) {
+    Serial.println("[MPU] Init FAILED — device not found on I2C bus");
+    mpuOk = false;
+    return;
+  }
+  delay(100);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_CONFIG);
+  Wire.write(0x10);   // ±8 g
+  Wire.endTransmission(true);
+  delay(50);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(GYRO_CONFIG);
+  Wire.write(0x00);   // ±250 °/s
+  Wire.endTransmission(true);
+  delay(50);
+
+  mpuOk = true;
+  mpuFailStreak = 0;
+  Serial.println("[MPU] MPU-6050 initialised OK");
+  Serial.println("HEALTH:MPU6050=OK");
+}
+
+/**
+ * Returns true if the read succeeded.
+ * On failure increments mpuFailStreak; after MPU_MAX_FAILS consecutive
+ * failures mpuOk is cleared so other features can note the fault.
+ */
+bool readMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_XOUT_H);
+  if (Wire.endTransmission(false) != 0) {
+    mpuFailStreak++;
+    if (mpuFailStreak >= MPU_MAX_FAILS && mpuOk) {
+      mpuOk = false;
+      Serial.println("[MPU] I2C fault — IMU readings unavailable (motor/WiFi unaffected)");
+      Serial.println("HEALTH:MPU6050=FAIL");
+    }
+    return false;
+  }
+
+  Wire.requestFrom(MPU6050_ADDR, 14, 1);
+  if (Wire.available() < 14) {
+    mpuFailStreak++;
+    if (mpuFailStreak >= MPU_MAX_FAILS && mpuOk) {
+      mpuOk = false;
+      Serial.println("[MPU] I2C short read — IMU readings unavailable");
+      Serial.println("HEALTH:MPU6050=FAIL");
+    }
+    return false;
+  }
+
+  accelX = (Wire.read() << 8) | Wire.read();
+  accelY = (Wire.read() << 8) | Wire.read();
+  accelZ = (Wire.read() << 8) | Wire.read();
+  Wire.read(); Wire.read();
+  gyroX  = (Wire.read() << 8) | Wire.read();
+  gyroY  = (Wire.read() << 8) | Wire.read();
+  gyroZ  = (Wire.read() << 8) | Wire.read();
+
+  // Good read — reset streak; re-announce recovery
+  if (!mpuOk) {
+    mpuOk = true;
+    Serial.println("[MPU] I2C recovered — IMU readings restored");
+    Serial.println("HEALTH:MPU6050=OK");
+    angleInitialized = false;   // reinitialise Kalman on recovery
+  }
+  mpuFailStreak = 0;
+  return true;
+}
+
+void convertMPU6050() {
+  accelX_g  = (float)accelX / 4096.0;
+  accelY_g  = (float)accelY / 4096.0;
+  accelZ_g  = (float)accelZ / 4096.0;
+  gyroX_dps = (float)gyroX  / 131.0;
+  gyroY_dps = (float)gyroY  / 131.0;
+  gyroZ_dps = (float)gyroZ  / 131.0;
+}
+
+void calculateCurrentAngles() {
+  float accelXAngle = atan2(accelX_g, sqrt(accelY_g*accelY_g + accelZ_g*accelZ_g)) * RAD_TO_DEG;
+  float accelYAngle = atan2(accelY_g, sqrt(accelX_g*accelX_g + accelZ_g*accelZ_g)) * RAD_TO_DEG;
+  float accelZAngle = atan2(accelZ_g, sqrt(accelX_g*accelX_g + accelY_g*accelY_g)) * RAD_TO_DEG;
+
+  unsigned long now = millis();
+  float dt = (now - lastUpdateTime) / 1000.0;
+  if (dt <= 0.0) dt = 0.01;
+  lastUpdateTime = now;
+
+  if (!angleInitialized) {
+    kalmanAngleX = accelXAngle;
+    kalmanAngleY = accelYAngle;
+    kalmanAngleZ = accelZAngle;
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+    angleInitialized = true;
+  } else {
+    kalmanUpdate(kalmanAngleX, kalmanBiasX, kalmanP_X, accelXAngle, gyroX_dps, dt);
+    kalmanUpdate(kalmanAngleY, kalmanBiasY, kalmanP_Y, accelYAngle, gyroY_dps, dt);
+    kalmanUpdate(kalmanAngleZ, kalmanBiasZ, kalmanP_Z, accelZAngle, gyroZ_dps, dt);
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+  }
+
+  normalizeAngle(current_angleX);
+  normalizeAngle(current_angleY);
+  normalizeAngle(current_angleZ);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vibration / FFT
+// ─────────────────────────────────────────────────────────────────────────────
+
+void updateVibration() {
+  if (!mpuOk) return;   // no data to process
+  unsigned long now = millis();
+  if (now - vibrLastMs < (unsigned long)VIBR_SAMPLE_MS) return;
+  vibrLastMs = now;
+
+  float mag = sqrtf(accelX_g * accelX_g + accelY_g * accelY_g + accelZ_g * accelZ_g);
+  vibrVReal[vibrIdx] = (double)mag;
+  vibrVImag[vibrIdx] = 0.0;
+  vibrIdx++;
+
+  if (vibrIdx < VIBR_N) return;
+
+  double mean = 0.0;
+  for (int i = 0; i < VIBR_N; i++) mean += vibrVReal[i];
+  mean /= (double)VIBR_N;
+
+  double sumSq = 0.0;
+  for (int i = 0; i < VIBR_N; i++) {
+    vibrVReal[i] -= mean;
+    sumSq += vibrVReal[i] * vibrVReal[i];
+  }
+  vibrRmsG = sqrtf((float)(sumSq / VIBR_N));
+
+  for (int i = 0; i < VIBR_N; i++) vibrVImag[i] = 0.0;
+
+  vibrFFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
+  vibrFFT.compute(FFTDirection::Forward);
+  vibrFFT.complexToMagnitude();
+
+  double peak = vibrFFT.majorPeak();
+  if (peak < 2.0 || peak > 240.0) peak = 0.0;
+  vibrFreqHz = (float)peak;
+  vibrRpmEst = vibrFreqHz * 60.0f;
+
+  vibrIdx = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reference angles
+// ─────────────────────────────────────────────────────────────────────────────
+
+void resetReference() {
+  refAngleX = current_angleX;
+  refAngleY = current_angleY;
+  refAngleZ = current_angleZ;
+  initialized = true;
+  Serial.println("STATUS:REF_RESET=OK");
+}
+
+void calculateAngleErrors() {
+  error_X = -(current_angleX - refAngleX);
+  error_Y =   current_angleY - refAngleY;
+  error_Z =   current_angleZ - refAngleZ;
+  normalizeAngle(error_X);
+  normalizeAngle(error_Y);
+  normalizeAngle(error_Z);
+  if (fabs(error_X) < 0.4) error_X = 0.0;
+  if (fabs(error_Y) < 0.4) error_Y = 0.0;
+  if (fabs(error_Z) < 0.4) error_Z = 0.0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Motor control
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void setThrottle(int us) {
+  us = constrain(us, ARM_THROTTLE, MAX_THROTTLE);
+#if HAS_ESC
+  uint32_t duty = (uint32_t)us * 65535UL / 20000UL;
+  ledcWrite(PWM_CHANNEL, duty);
+#endif
+  motorThrottle = us;   // tracked regardless, so telemetry/UI still reflect commanded state
+}
+
+static void setThrottleTarget(int targetUs) {
+  targetUs = constrain(targetUs, MIN_THROTTLE, MAX_THROTTLE);
+  if (targetUs == motorRampTarget) return;
+  motorRampTarget = targetUs;
+  motorRamping = true;
+  lastRampMs = millis();
+}
+
+static void rampStep() {
+  if (!motorRamping) return;
+  if ((millis() - lastRampMs) < RAMP_STEP_MS) return;
+  lastRampMs = millis();
+
+  if (motorThrottle < motorRampTarget) {
+    setThrottle(min(motorThrottle + RAMP_STEP_US, motorRampTarget));
+  } else if (motorThrottle > motorRampTarget) {
+    setThrottle(max(motorThrottle - RAMP_STEP_US, motorRampTarget));
+  } else {
+    motorRamping = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tilt-stabilisation PID (auto-throttle)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void resetPidState() {
+  pidIntegral  = 0.0f;
+  pidPrevError = 0.0f;
+  pidDerivative = 0.0f;
+  pidFirstTick = true;
+  lastPidTickMs = millis();
+}
+
+static void enterAutoMode() {
+  autoMode = true;
+  resetPidState();
+  Serial.println("[PID] auto mode ON — tilt-stabilised throttle");
+}
+
+static void enterManualMode(const char *reason) {
+  if (autoMode) {
+    autoMode = false;
+    resetPidState();
+    Serial.print("[PID] auto mode OFF -> manual (");
+    Serial.print(reason);
+    Serial.println(")");
+  }
+}
+
+/**
+ * One PID tick: reads the current tilt error (already computed by
+ * calculateAngleErrors()) and drives motorThrottle target toward
+ * MIN_THROTTLE + f(tilt). Call once per loop() while autoMode is active.
+ *
+ * Feedback variable is TILT, not RPM — see comment on the PID globals above
+ * for why RPM can't be the fast-loop feedback signal on this hardware.
+ */
+static void updateAutoThrottle() {
+  unsigned long now = millis();
+  float dtMs = pidFirstTick ? 0.0f : (float)(now - lastPidTickMs);
+  lastPidTickMs = now;
+
+  // Feedback: worst-axis tilt magnitude (degrees). Setpoint is 0 (level).
+  float tilt = max(fabsf(error_X), fabsf(error_Y));
+  pidLastTilt = tilt;
+
+  // Small tilt is noise, not a real disturbance — ignore it so the PID
+  // doesn't hunt around the setpoint.
+  float error = (tilt < PID_TILT_DEADBAND_DEG) ? 0.0f : tilt;
+
+  if (pidFirstTick || dtMs <= 0.0f) {
+    pidDerivative = 0.0f;
+  } else {
+    float dtSec = dtMs / 1000.0f;
+    pidDerivative = (error - pidPrevError) / dtSec;
+    pidIntegral += error * dtSec;
+    pidIntegral = constrain(pidIntegral, -PID_INTEGRAL_MAX, PID_INTEGRAL_MAX);
+  }
+  pidPrevError = error;
+  pidFirstTick = false;
+
+  float output = pidKp * error + pidKi * pidIntegral + pidKd * pidDerivative;
+  output = constrain(output, 0.0f, PID_OUTPUT_MAX);
+
+  // Anti-windup: stop integrating further in the direction that's already
+  // saturating the output, so the integral term can't run away while pinned.
+  if ((output >= PID_OUTPUT_MAX && error > 0) || (output <= 0.0f && error > 0)) {
+    pidIntegral = constrain(pidIntegral, -PID_INTEGRAL_MAX, PID_INTEGRAL_MAX * 0.5f);
+  }
+
+  pidLastOutput = output;
+  setThrottleTarget(MIN_THROTTLE + (int)output);
+}
+
+static void resetRPMState() {
+  rpmValue = 0;
+  rpmFreqHz = 0.0f;
+  rpmPeriodMs = 0;
+  filteredRpm = 0.0f;
+  filteredFreqHz = 0.0f;
+  rpmPeriodWriteIdx = 0;
+  rpmPeriodCount = 0;
+  lastPulseMicrosSnapshot = 0;
+  rpmTotalPulses = 0;
+  for (uint8_t i = 0; i < RPM_AVG_SAMPLES; i++) rpmPeriodBuffer[i] = 0;
+
+  noInterrupts();
+  rpmPulseCount = 0;
+  rpmLastPulseMicros = 0;
+  rpmLastPeriodUs = 0;
+  rpmNewPeriod = false;
+  interrupts();
+}
+
+void IRAM_ATTR rpmPulseISR() {
+  uint32_t now = micros();
+  if (rpmLastPulseMicros > 0) {
+    uint32_t deltaUs = now - rpmLastPulseMicros;
+    if (deltaUs < IR_DEBOUNCE_US) return;
+    rpmLastPeriodUs = deltaUs;
+    rpmNewPeriod = true;
+  }
+  rpmLastPulseMicros = now;
+  rpmPulseCount++;
+  rpmTotalPulses++;
+}
+
+static void processRPMPulse() {
+  bool haveNewPeriod = false;
+  uint32_t periodUs = 0;
+
+  noInterrupts();
+  haveNewPeriod = rpmNewPeriod;
+  periodUs = rpmLastPeriodUs;
+  if (haveNewPeriod) {
+    rpmNewPeriod = false;
+  }
+  uint32_t lastPulseMicrosSnapshot = rpmLastPulseMicros;
+  interrupts();
+
+  if (haveNewPeriod && periodUs > 0) {
+    float candidateRpm = 60000000.0f / (float)(periodUs * RPM_PULSES_PER_REV);
+    float candidateFreqHz = 1000000.0f / (float)periodUs;
+
+    if (candidateRpm >= RPM_MIN_VALID_RPM && candidateRpm <= RPM_MAX_VALID_RPM) {
+      rpmFreqHz = candidateFreqHz;
+      rpmPeriodMs = periodUs / 1000UL;
+
+      if (filteredRpm <= 0.0f) {
+        filteredRpm = candidateRpm;
+        filteredFreqHz = candidateFreqHz;
+      } else {
+        filteredRpm = filteredRpm * 0.75f + candidateRpm * 0.25f;
+        filteredFreqHz = filteredFreqHz * 0.75f + candidateFreqHz * 0.25f;
+      }
+    }
+
+    lastPulseMicrosSnapshot = micros();
+    return;
+  }
+
+  if (lastPulseMicrosSnapshot == 0) return;
+
+  uint32_t elapsedMs = (micros() - lastPulseMicrosSnapshot) / 1000UL;
+  if (elapsedMs > RPM_TIMEOUT_MS) {
+    rpmValue = 0;
+    rpmFreqHz = 0.0f;
+    rpmPeriodMs = 0;
+    filteredRpm = 0.0f;
+    filteredFreqHz = 0.0f;
+    lastPulseMicrosSnapshot = 0;
+  }
+}
+
+static void publishRPMValue() {
+  if ((millis() - lastRpmReportMs) < RPM_REPORT_INTERVAL_MS) return;
+  lastRpmReportMs = millis();
+
+  if (filteredRpm > 0.0f) {
+    rpmValue = (uint32_t)filteredRpm;
+    rpmFreqHz = filteredFreqHz;
+  } else {
+    rpmValue = 0;
+    rpmFreqHz = 0.0f;
+  }
+}
+
+void startMotor() {
+  if (motorRunning) { Serial.println("STATUS:MOTOR=ON"); return; }
+  motorRunning = true;
+  resetRPMState();
+  Serial.println("--- RAMPING MOTOR UP ---");
+  setThrottleTarget(START_THROTTLE);
+  Serial.println("STATUS:MOTOR=ON");
+}
+
+void stopMotor() {
+  motorRunning = false;
+  motorRamping = false;
+  setThrottle(ARM_THROTTLE);
+  motorRampTarget = ARM_THROTTLE;
+  resetRPMState();
+  enterManualMode("MOTOR_STOP");
+  Serial.println("STATUS:MOTOR=OFF");
+}
+
+void emergencyStop() {
+  motorRunning = false;
+  motorRamping = false;
+  setThrottle(ARM_THROTTLE);
+  motorRampTarget = ARM_THROTTLE;
+  resetRPMState();
+  enterManualMode("EMERGENCY_STOP");
+  Serial.println("STATUS:MOTOR=ESTOP");
+  Serial.println("!!! EMERGENCY STOP !!!");
+}
+
+void updateMotor() {
+  if (!motorRunning && motorThrottle != ARM_THROTTLE) {
+    setThrottle(ARM_THROTTLE);
+  }
+  rampStep();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// App command parser — shared by Serial and WiFi TCP
+// ─────────────────────────────────────────────────────────────────────────────
+
+void handleAppCommand(const String &cmd) {
+  if (cmd == "CMD:MOTOR_START") {
+    Serial.println("[CMD] MOTOR_START");
+    if (!motorRunning) { startMotor(); }
+    else               { Serial.println("STATUS:MOTOR=ON"); }
+
+  } else if (cmd == "CMD:MOTOR_STOP") {
+    Serial.println("[CMD] MOTOR_STOP");
+    stopMotor();
+
+  } else if (cmd == "CMD:EMERGENCY_STOP") {
+    Serial.println("[CMD] EMERGENCY_STOP");
+    emergencyStop();
+
+  } else if (cmd == "CMD:SPEED_UP") {
+    enterManualMode("SPEED_UP");
+    if (motorRunning) setThrottleTarget(motorThrottle + MOTOR_SPEED_STEP);
+
+  } else if (cmd == "CMD:SPEED_DOWN") {
+    enterManualMode("SPEED_DOWN");
+    if (motorRunning) setThrottleTarget(motorThrottle - MOTOR_SPEED_STEP);
+
+  } else if (cmd == "CMD:RESET_REF") {
+    Serial.println("[CMD] RESET_REF");
+    resetReference();
+
+  } else if (cmd.startsWith("CMD:MANUAL_RPM:")) {
+    int targetRpm = cmd.substring(15).toInt();
+    enterManualMode("MANUAL_RPM");
+    if (targetRpm <= 0) {
+      Serial.println("[CMD] MANUAL_RPM:0 → stop");
+      stopMotor();
+    } else {
+      Serial.print("[CMD] MANUAL_RPM:"); Serial.println(targetRpm);
+      if (!motorRunning) startMotor();
+      // Linear throttle map: MIN_THROTTLE at 0 RPM → MAX_THROTTLE at 12000 RPM
+      // (calibrate this against your actual motor+battery+propeller setup)
+      int targetUs = MIN_THROTTLE + (int)((float)targetRpm / 12000.0f * (MAX_THROTTLE - MIN_THROTTLE));
+      targetUs = constrain(targetUs, MIN_THROTTLE, MAX_THROTTLE);
+      setThrottleTarget(targetUs);
+    }
+
+  } else if (cmd == "CMD:WIFI_RECONNECT") {
+    Serial.println("[CMD] WIFI_RECONNECT");
+    forceWifiReconnect();
+
+  } else if (cmd == "CMD:SET_AUTO") {
+#if HAS_MPU6050
+    Serial.println("[CMD] SET_AUTO → tilt-stabilised PID mode");
+    if (!motorRunning) startMotor();
+    enterAutoMode();
+#else
+    Serial.println("[CMD] SET_AUTO rejected — MPU6050 not enabled (HAS_MPU6050=0), no tilt feedback available");
+    Serial.println("STATUS:AUTO_REJECTED=NO_IMU");
+#endif
+
+  } else if (cmd == "CMD:SET_MANUAL") {
+    // Disable PID stabilisation but leave the current throttle/RPM untouched —
+    // used by the dashboard PID push-button and the "200+" IR toggle.
+    Serial.println("[CMD] SET_MANUAL → PID off, holding current throttle");
+    enterManualMode("APP_MANUAL");
+
+  } else if (cmd.startsWith("CMD:SET_PID:")) {
+    // CMD:SET_PID:<kp>,<ki>,<kd>
+    String payload = cmd.substring(12);
+    int c1 = payload.indexOf(',');
+    int c2 = payload.indexOf(',', c1 + 1);
+    if (c1 > 0 && c2 > c1) {
+      float kp = payload.substring(0, c1).toFloat();
+      float ki = payload.substring(c1 + 1, c2).toFloat();
+      float kd = payload.substring(c2 + 1).toFloat();
+      pidKp = kp; pidKi = ki; pidKd = kd;
+      resetPidState();
+      Serial.print("[CMD] SET_PID kp="); Serial.print(pidKp);
+      Serial.print(" ki="); Serial.print(pidKi);
+      Serial.print(" kd="); Serial.println(pidKd);
+    } else {
+      Serial.print("STATUS:CMD_MALFORMED="); Serial.println(cmd);
+    }
+
+  } else {
+    Serial.print("STATUS:CMD_UNKNOWN="); Serial.println(cmd);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IR remote (VS1838B) handler
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── IR remote button map (21-button Car MP3 remote, NEC protocol, address 0x00) ──
+//
+//  Physical layout:
+//    [ CH−  ]  [ CH   ]  [ CH+  ]   ← row 1
+//    [ PREV ]  [ NEXT ]  [ ▶⏸  ]   ← row 2
+//    [ VOL− ]  [ VOL+ ]  [ EQ   ]   ← row 3
+//    [  0   ]  [ 100+ ]  [ 200+ ]   ← row 4
+//    [  1   ]  [  2   ]  [  3   ]   ← row 5
+//    [  4   ]  [  5   ]  [  6   ]   ← row 6
+//    [  7   ]  [  8   ]  [  9   ]   ← row 7
+//
+//  Assignment:
+//    ▶⏸   → Start / Stop toggle   (PLAY_PAUSE)
+//    EQ    → Reset to idle speed   (return throttle to MIN_THROTTLE)
+//    CH    → Enter PID tuning mode (broadcasts tuning event to dashboard)
+//    8     → Reset IMU ref angles  (re-zero tilt X/Y/Z)
+//    PREV  → Speed down coarse     (−5 steps, repeatable while held)
+//    NEXT  → Speed up coarse       (+5 steps, repeatable while held)
+//    VOL−  → Speed down fine       (−1 step,  repeatable while held)
+//    VOL+  → Speed up fine         (+1 step,  repeatable while held)
+//    0     → Graceful motor stop    (natural flywheel deceleration, session stays alive)
+
+#define IR_CH_MINUS   0x45
+#define IR_CH         0x46
+#define IR_CH_PLUS    0x47
+#define IR_PREV       0x44
+#define IR_NEXT       0x40
+#define IR_PLAY_PAUSE 0x43
+#define IR_EQ         0x09
+#define IR_8          0x52
+#define IR_VOL_MINUS  0x07
+#define IR_VOL_PLUS   0x15
+#define IR_0          0x16
+// Number buttons (used for digit input in dashboard PID tuning mode)
+#define IR_1          0x0C
+#define IR_2          0x18
+#define IR_3          0x5E
+#define IR_4          0x08
+#define IR_5          0x1C
+#define IR_6          0x5A
+#define IR_7          0x42
+// IR_8 = 0x52 already defined above (reset angles)
+#define IR_9          0x4A
+#define IR_100_PLUS   0x19   // backspace in tuning mode
+#define IR_200_PLUS   0x0D   // 200+     → toggle PID auto-mode on/off
+
+static unsigned long irLedOffMs = 0;
+
+static void handleIR() {
+  if (!IrReceiver.decode()) return;
+
+  uint8_t cmd      = IrReceiver.decodedIRData.command;
+  bool    isRepeat = (IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT);
+  IrReceiver.resume();
+
+  // Hold-down repeat only for speed nudge buttons
+  bool allowRepeat = (cmd == IR_NEXT     || cmd == IR_PREV ||
+                      cmd == IR_VOL_PLUS || cmd == IR_VOL_MINUS);
+  if (isRepeat && !allowRepeat) return;
+
+  // Flash onboard LED for every accepted IR command
+  digitalWrite(ONBOARD_LED, HIGH);
+  irLedOffMs = millis() + 200;
+
+  switch (cmd) {
+    // ── Motor on/off ────────────────────────────────────────────────────────
+    case IR_PLAY_PAUSE:
+      if (motorRunning) {
+        lastIrCommand = "STOP";
+        Serial.println("CMD:IR_STOP");
+        stopMotor();
+      } else {
+        lastIrCommand = "START";
+        Serial.println("CMD:IR_START");
+        startMotor();
+      }
+      break;
+
+    // ── Graceful motor stop (ramp to idle, session stays alive) ─────────────
+    case IR_0:
+      lastIrCommand = "STOP";
+      Serial.println("CMD:IR_STOP");
+      stopMotor();   // disengage ESC at ARM_THROTTLE; flywheel decelerates naturally
+      break;
+
+    // ── Speed control (coarse) ───────────────────────────────────────────────
+    case IR_NEXT:
+      lastIrCommand = "SPEED_UP_COARSE";
+      Serial.println("CMD:IR_NEXT");
+      if (!motorRunning) { Serial.println("[IR] Ignored — motor off"); break; }
+      setThrottleTarget(motorThrottle + MOTOR_SPEED_STEP * 5);
+      break;
+
+    case IR_PREV:
+      lastIrCommand = "SPEED_DOWN_COARSE";
+      Serial.println("CMD:IR_PREV");
+      if (!motorRunning) { Serial.println("[IR] Ignored — motor off"); break; }
+      setThrottleTarget(motorThrottle - MOTOR_SPEED_STEP * 5);
+      break;
+
+    // ── Speed control (fine) ─────────────────────────────────────────────────
+    case IR_VOL_PLUS:
+      lastIrCommand = "SPEED_UP_FINE";
+      Serial.println("CMD:IR_VOL_PLUS");
+      if (!motorRunning) { Serial.println("[IR] Ignored — motor off"); break; }
+      setThrottleTarget(motorThrottle + MOTOR_SPEED_STEP);
+      break;
+
+    case IR_VOL_MINUS:
+      lastIrCommand = "SPEED_DOWN_FINE";
+      Serial.println("CMD:IR_VOL_MINUS");
+      if (!motorRunning) { Serial.println("[IR] Ignored — motor off"); break; }
+      setThrottleTarget(motorThrottle - MOTOR_SPEED_STEP);
+      break;
+
+    // ── Reset to idle speed ──────────────────────────────────────────────────
+    case IR_EQ:
+      lastIrCommand = "IDLE_SPEED";
+      Serial.println("CMD:IR_EQ");
+      if (!motorRunning) { Serial.println("[IR] Ignored — motor off"); break; }
+      Serial.println("[IR] Reset to idle speed");
+      setThrottleTarget(MIN_THROTTLE);
+      break;
+
+    // ── IMU reference reset ──────────────────────────────────────────────────
+    case IR_8:
+      lastIrCommand = "RESET_ANGLES";
+      Serial.println("CMD:IR_RESET_ANGLES");
+      resetReference();
+      break;
+
+    // ── Session control (dashboard) ──────────────────────────────────────────
+    case IR_CH_PLUS:
+      lastIrCommand = "SESSION_START";
+      Serial.println("CMD:IR_CH_PLUS");
+      Serial.println("[IR] Session start requested via dashboard");
+      break;
+
+    case IR_CH_MINUS:
+      lastIrCommand = "SESSION_STOP";
+      Serial.println("CMD:IR_CH_MINUS");
+      Serial.println("[IR] Session stop requested via dashboard");
+      break;
+
+    // ── PID tuning mode ──────────────────────────────────────────────────────
+    case IR_CH:
+      lastIrCommand = "PID_TUNING";
+      Serial.println("CMD:IR_PID_TUNING");
+      Serial.println("[IR] PID tuning mode — adjust gains via dashboard");
+      break;
+
+    // ── Digit input (for dashboard PID tuning dialog) ─────────────────────
+    case IR_1: lastIrCommand = "NUM_1"; Serial.println("CMD:IR_NUM_1"); break;
+    case IR_2: lastIrCommand = "NUM_2"; Serial.println("CMD:IR_NUM_2"); break;
+    case IR_3: lastIrCommand = "NUM_3"; Serial.println("CMD:IR_NUM_3"); break;
+    case IR_4: lastIrCommand = "NUM_4"; Serial.println("CMD:IR_NUM_4"); break;
+    case IR_5: lastIrCommand = "NUM_5"; Serial.println("CMD:IR_NUM_5"); break;
+    case IR_6: lastIrCommand = "NUM_6"; Serial.println("CMD:IR_NUM_6"); break;
+    case IR_7: lastIrCommand = "NUM_7"; Serial.println("CMD:IR_NUM_7"); break;
+    case IR_9: lastIrCommand = "NUM_9"; Serial.println("CMD:IR_NUM_9"); break;
+
+    // ── Backspace (clears last typed digit in dashboard tuning dialog) ─────
+    case IR_100_PLUS:
+      lastIrCommand = "BACKSPACE";
+      Serial.println("CMD:IR_BACKSPACE");
+      break;
+
+    // ── PID auto-mode push-button toggle ────────────────────────────────────
+    case IR_200_PLUS:
+      if (autoMode) {
+        lastIrCommand = "PID_OFF";
+        Serial.println("CMD:IR_PID_OFF");
+        enterManualMode("IR_TOGGLE");
+      } else {
+#if HAS_MPU6050
+        lastIrCommand = "PID_ON";
+        Serial.println("CMD:IR_PID_ON");
+        if (!motorRunning) startMotor();
+        enterAutoMode();
+#else
+        lastIrCommand = "PID_ON_REJECTED";
+        Serial.println("CMD:IR_PID_ON_REJECTED");
+        Serial.println("[IR] PID toggle ignored — MPU6050 not enabled (HAS_MPU6050=0)");
+#endif
+      }
+      break;
+
+    default:
+      // Unused button — ignore silently
+      break;
+  }
+  Serial.println(); // blank line after every IR command for serial-monitor readability
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Serial input handler
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void handleKey(char c) {
+  switch (c) {
+    case 'Z': case 'z':
+      Serial.println("[Key] Reset reference");
+      resetReference();
+      break;
+    case 'S': case 's':
+      Serial.println("[Key] Start motor");
+      if (!motorRunning) { startMotor(); }
+      break;
+    case 'X': case 'x':
+      Serial.println("[Key] Stop motor");
+      stopMotor();
+      break;
+    case 'H': case 'h':
+      if (!motorRunning) { Serial.println("[Key] Speed up ignored (motor off)"); break; }
+      Serial.println("[Key] Speed up");
+      setThrottleTarget(motorThrottle + MOTOR_SPEED_STEP);
+      break;
+    case 'L': case 'l':
+      if (!motorRunning) { Serial.println("[Key] Speed down ignored (motor off)"); break; }
+      Serial.println("[Key] Speed down");
+      setThrottleTarget(motorThrottle - MOTOR_SPEED_STEP);
+      break;
+    case 'W': case 'w':
+      Serial.println("[Key] Force WiFi reconnect");
+      forceWifiReconnect();
+      break;
+    default:
+      Serial.printf("[Key] Unknown: '%c'\n", c);
+      break;
+  }
+}
+
+static char    serialBuf[64];
+static uint8_t serialLen = 0;
+
+void processSerialInput() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+
+    if (c == '\n') {
+      serialBuf[serialLen] = '\0';
+      if (serialLen > 0) {
+        if (strncmp(serialBuf, "CMD:", 4) == 0)
+          handleAppCommand(String(serialBuf));
+        else if (serialLen == 1)
+          handleKey(serialBuf[0]);
+        else
+          Serial.printf("[Serial] Unknown input: %s\n", serialBuf);
+      }
+      serialLen = 0;
+    } else {
+      // Immediate single-char dispatch (no Enter pressed yet)
+      if (serialLen == 0 && Serial.available() == 0) {
+        handleKey(c);
+      } else {
+        if (serialLen < (uint8_t)(sizeof(serialBuf) - 1))
+          serialBuf[serialLen++] = c;
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Telemetry — sent over Serial AND WiFi TCP simultaneously
+// ─────────────────────────────────────────────────────────────────────────────
+
+void sendAppTelemetry() {
+  float pwmPercent = 0.0;
+  if (motorThrottle > ARM_THROTTLE)
+    pwmPercent = (float)(motorThrottle - ARM_THROTTLE) / (MAX_THROTTLE - ARM_THROTTLE) * 100.0;
+  float avg_tiltMag = sqrt((error_X * error_X) + (error_Y * error_Y));
+
+#if HAS_TEMP_SENSOR
+  float tempC = temperatureRead();   // swap for your dedicated sensor's read call
+#else
+  float tempC = 0.0;   // no temperature sensor connected — avoid false safety alerts from the ESP32's internal die temp
+#endif
+
+  String json =
+    String("{\"rpm\":")           + String(rpmValue) +
+    String(",\"tiltX\":")         + String(mpuOk ? error_X   : 0.0, 1) +
+    String(",\"tiltY\":")         + String(mpuOk ? error_Y   : 0.0, 1) +
+    String(",\"tiltZ\":")         + String(mpuOk ? error_Z   : 0.0, 1) +
+    String(",\"rotationZ\":")     + String(mpuOk ? gyroZ_dps : 0.0, 2) +
+    String(",\"avgTiltMag\":")    + String(mpuOk ? avg_tiltMag : 0.0, 2) +
+    String(",\"temp\":") + String(tempC, 1) + String(",\"pwm\":") + String(pwmPercent, 2) +
+    String(",\"throttle\":")     + String(motorThrottle) +
+    String(",\"vibration\":")     + String(mpuOk ? vibrRmsG   : 0.0, 4) +
+    String(",\"vibrationFreq\":") + String(mpuOk ? vibrFreqHz : 0.0, 2) +
+    String(",\"mpuFault\":")      + (mpuOk ? "false" : "true") +
+    String(",\"mode\":\"")        + (autoMode ? "auto" : "manual") + String("\"") +
+    String(",\"pidOutput\":")     + String(autoMode ? pidLastOutput : 0.0, 1) +
+    String(",\"pidTilt\":")       + String(autoMode ? pidLastTilt   : 0.0, 2) +
+    String(",\"irCommand\":\"") + lastIrCommand + String("\"") +
+    String("}");
+
+  lastIrCommand = "none";   // consume after one broadcast so it doesn't repeat every second
+
+  // Always send over USB Serial (for the Electron/USB bridge)
+  Serial.println(json);
+
+  // Also send over WiFi TCP if connected
+  if (tcpClient.connected()) {
+    tcpClient.println(json);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// setup
+// ─────────────────────────────────────────────────────────────────────────────
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  Serial.println();
+  Serial.println("==============================================");
+  Serial.println("  ESP32 IMU + ESC CONTROLLER  v3.0");
+  Serial.println("  USB serial + WiFi active simultaneously");
+  Serial.println("==============================================");
+
+  // WiFi + OTA + HTTP server
+  initWifi();
+  delay(300);
+  if (APP_SERVER_ENABLED) {
+    connectToServer();
+  } else {
+    Serial.println("[WiFi] App server connect disabled for USB motor testing");
+  }
+
+  // Announce over both channels
+  Serial.println("DEVICE_INFO:esp32LOGIC|VERSION:3.0|COMPONENTS:" + connectedComponentsList() + "|BAUD:115200");
+  Serial.println("{\"status\":\"boot\",\"msg\":\"Gyro Monitor ESP32 v3.0 starting\"}");
+
+  // Hardware
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+  pinMode(ONBOARD_LED, OUTPUT);
+  digitalWrite(ONBOARD_LED, LOW);
+  IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
+
+#if HAS_RPM_SENSOR
+  pinMode(RPM_SENSOR_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RPM_SENSOR_PIN), rpmPulseISR, RISING);
+#else
+  Serial.println("[RPM] Skipped — HAS_RPM_SENSOR=0 (speed sensor not connected)");
+#endif
+
+#if HAS_MPU6050
+  Wire.begin(22, 21);
+  initMPU6050();
+#else
+  Serial.println("[MPU] Skipped — HAS_MPU6050=0 (IMU not connected)");
+#endif
+  lastUpdateTime = millis();
+
+#if HAS_ESC
+  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(ESC_PIN, PWM_CHANNEL);
+  setThrottle(ARM_THROTTLE);
+  delay(100);
+
+  Serial.println("Arming ESC...");
+  setThrottle(ARM_THROTTLE);
+  delay(3000);
+  Serial.println("ESC Armed. STATUS:MOTOR=OFF");
+#else
+  Serial.println("[ESC] Skipped — HAS_ESC=0 (motor/ESC not connected)");
+#endif
+
+  Serial.println("==============================================");
+  Serial.println("  Serial keys: Z=reset-ref  S=start  X=stop");
+  Serial.println("               H=speed-up   L=speed-down  W=wifi-reconnect");
+  Serial.println("  IR remote:  CH=START  CH-=STOP  CH+=RESET");
+  Serial.println("              NEXT=UP  PREV=DOWN  0=E-STOP");
+  Serial.println("==============================================");
+
+  lastTelemetryTime = millis();
+  vibrLastMs = millis();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+void loop() {
+  // ── WiFi / OTA handlers (always polled — independent of USB) ──────────────
+  ArduinoOTA.handle();
+  httpServer.handleClient();
+  maintainWifiConnection();
+  if (tcpClient.connected()) processWifiInput();
+
+  // ── USB serial commands ───────────────────────────────────────────────────
+  processSerialInput();
+
+  // -- IR remote (VS1838B on GPIO 17) ----------------------------------------
+  handleIR();
+  if (irLedOffMs > 0 && (long)(millis() - irLedOffMs) >= 0) {
+    digitalWrite(ONBOARD_LED, LOW);
+    irLedOffMs = 0;
+  }
+
+  // ── Hardware reset button ─────────────────────────────────────────────────
+  if (digitalRead(RESET_BUTTON) == LOW) {
+    delay(50);
+    if (digitalRead(RESET_BUTTON) == LOW) {
+      resetReference();
+      delay(500);
+    }
+  }
+
+  // ── IMU (gracefully skipped if MPU is faulted) ────────────────────────────
+#if HAS_MPU6050
+  if (readMPU6050()) {
+    convertMPU6050();
+    calculateCurrentAngles();
+    updateVibration();
+    if (!initialized) resetReference();
+    calculateAngleErrors();
+  }
+#endif
+
+  // ── RPM pulse sensor processing ----------------------------------------
+#if HAS_RPM_SENSOR
+  processRPMPulse();
+  publishRPMValue();
+#endif
+
+  // ── Tilt-stabilisation PID (auto mode only) ───────────────────────────────
+#if HAS_MPU6050
+  if (autoMode && motorRunning) {
+    if (mpuOk) {
+      updateAutoThrottle();
+    } else {
+      // Lost IMU feedback mid-flight — fail safe out of auto mode rather
+      // than holding a stale throttle target blind.
+      enterManualMode("MPU_FAULT");
+      Serial.println("STATUS:AUTO_DISABLED=NO_IMU");
+    }
+  }
+#endif
+
+  // ── Motor keep-alive ──────────────────────────────────────────────────────
+#if HAS_ESC
+  updateMotor();
+#endif
+
+  // ── Telemetry (USB + WiFi) ────────────────────────────────────────────────
+  unsigned long now = millis();
+  if (now - lastTelemetryTime >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryTime = now;
+    sendAppTelemetry();
+  }
+}

@@ -1,0 +1,52 @@
+--- Terminal on COM6 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:1184
+load:0x40078000,len:13232
+load:0x40080400,len:3028
+entry 0x400805e4
+
+==============================================
+  ESP32 IMU + ESC CONTROLLER  v3.0
+  USB serial + WiFi active simultaneously
+==============================================
+[WiFi] Scanning nearby networks...
+[WiFi]   found: 'TECNO CAMON 20' ch=11 rssi=-46 enc=3
+[WiFi]   found: 'eduroam' ch=11 rssi=-54 enc=5
+[WiFi]   found: 'Tecno 20' ch=11 rssi=-61 enc=3
+[WiFi]   found: 'eduroam' ch=6 rssi=-80 enc=5
+[WiFi]   found: 'CONEKT...' ch=1 rssi=-82 enc=0
+[WiFi]   found: 'JK' ch=1 rssi=-84 enc=3
+[WiFi]   found: 'aliXus Electronics' ch=1 rssi=-89 enc=3
+[WiFi]   found: 'Yamikani's Galaxy A05 2280' ch=6 rssi=-89 enc=3
+[WiFi]   found: 'Drixin27 ' ch=1 rssi=-92 enc=3
+[WiFi]   found: 'itel A70' ch=1 rssi=-93 enc=3
+[WiFi]   found: 'YOUT' ch=11 rssi=-93 enc=3
+[WiFi] Connecting to 'TECNO CAMON 20' ...
+[WiFi] STA connected!
+[WiFi] ESP32 IP: 10.133.87.213
+[WiFi] Server  : 10.133.87.126:5001
+[OTA] ArduinoOTA ready (hostname: gyromonitor)
+[HTTP] Server on port 80 — open http://<esp32-ip>/ for control page
+[WiFi] Connecting to app server 10.133.87.126:5001 ... FAILED
+DEVICE_INFO:esp32LOGIC|VERSION:3.0|COMPONENTS:IR|BAUD:115200
+{"status":"boot","msg":"Gyro Monitor ESP32 v3.0 starting"}
+[RPM] Skipped — HAS_RPM_SENSOR=0 (speed sensor not connected)
+[MPU] Skipped — HAS_MPU6050=0 (IMU not connected)
+[ESC] Skipped — HAS_ESC=0 (motor/ESC not connected)
+==============================================
+  Serial keys: Z=reset-ref  S=start  X=stop
+               H=speed-up   L=speed-down
+  IR remote:  CH=START  CH-=STOP  CH+=RESET
+              NEXT=UP  PREV=DOWN  0=E-STOP
+==============================================
+[WiFi] Connecting to app server 10.133.87.126:5001 ... FAILED
+{"rpm":0,"tiltX":0.0,"tiltY":0.0,"tiltZ":0.0,"rotationZ":0.00,"avgTiltMag":0.00,"temp":0.0,"pwm":0.00,"throttle":1000,"vibration":0.0000,"vibrationFreq":0.00,"mpuFault":true,"irCommand":"none"}
+{"rpm":0,"tiltX":0.0,"tiltY":0.0,"tiltZ":0.0,"rotationZ":0.00,"avgTiltMag":0.00,"temp":0.0,"pwm":0.00,"throttle":1000,"vibration":0.0000,"vibrationFreq":0.00,"mpuFault":true,"irCommand":"none"}

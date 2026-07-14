@@ -1,0 +1,358 @@
+/*
+================================================================================
+PHASE 0 - TEST 5D: SIMPLE 3-AXIS ANGLE MEASUREMENT (CARBON AERONAUTICS MATH INTEGRATED)
+Purpose: Measure X/Y/Z axis angle CHANGES from a reference position
+Objective: Press button or type 'Z' to set reference, see ANGLE DIFFERENCE
+
+Hardware:
+  - MPU6050 on I2C (D21/D22)
+  - Button D23 OR press 'Z' in Serial Monitor
+  
+Display: One line per SECOND showing angle difference from reference
+================================================================================
+*/
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <math.h>
+
+#define MPU6050_ADDR 0x68
+#define RESET_BUTTON 23
+#define ACCEL_XOUT_H 0x3B
+#define GYRO_XOUT_H 0x43
+#define PWR_MGMT_1 0x6B
+#define ACCEL_CONFIG 0x1C  // Added for range setup
+#define GYRO_CONFIG 0x1B   // Added for gyro range setup
+#define RAD_TO_DEG (180.0 / M_PI)
+#define WIFI_SSID "GyroMonitorESP32"
+#define WIFI_PASS "gyro12345"
+
+WebServer server(80);
+String telemetryJson = "{}";
+
+// Forward declarations
+void resetReference();
+void calculateCurrentAngles();
+void kalmanUpdate(float &angle, float &bias, float P[2][2], float newAngle, float newRate, float dt);
+void calculateAngleErrors();
+void displayAngles();
+void initMPU6050();
+void initWiFi();
+void readMPU6050();
+void convertMPU6050();
+void normalizeAngle(float &angle);
+
+// Raw sensor values
+int16_t accelX, accelY, accelZ;
+int16_t gyroX, gyroY, gyroZ;
+float accelX_g, accelY_g, accelZ_g;
+float gyroX_dps, gyroY_dps, gyroZ_dps;
+
+// Current angles
+float current_angleX = 0.0; // X-axis angle
+float current_angleY = 0.0; // Y-axis angle
+float current_angleZ = 0.0; // Z-axis angle
+
+// Kalman filter state for each axis
+float kalmanAngleX = 0.0;
+float kalmanBiasX = 0.0;
+float kalmanP_X[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+float kalmanAngleY = 0.0;
+float kalmanBiasY = 0.0;
+float kalmanP_Y[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+float kalmanAngleZ = 0.0;
+float kalmanBiasZ = 0.0;
+float kalmanP_Z[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+const float Q_angle = 0.001f;
+const float Q_bias = 0.003f;
+const float R_measure = 0.03f;
+
+unsigned long lastUpdateTime = 0;
+bool angleInitialized = false;
+
+// Reference angles (saved when button pressed)
+float refAngleX = 0.0;
+float refAngleY = 0.0;
+float refAngleZ = 0.0;
+bool initialized = false;
+
+// Error angles (difference from reference)
+float error_X = 0.0;
+float error_Y = 0.0;
+float error_Z = 0.0;
+
+const unsigned long TELEMETRY_INTERVAL_MS = 250; // 4 Hz for Gyro Monitor app
+unsigned long lastDisplay = 0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  // Gyro Monitor desktop app expects startup handshake lines
+  Serial.println("DEVICE_INFO:esp32LOGIC|VERSION:1.0|COMPONENTS:MPU6050|BAUD:115200");
+  Serial.println("HEALTH:MPU6050=OK");
+  Serial.println("{\"status\":\"boot\",\"msg\":\"Gyro Monitor ESP32 starting\"}");
+
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+  Wire.begin(21, 22);
+  delay(100);
+  initWiFi();
+  initMPU6050();
+  lastUpdateTime = millis();
+}
+
+void loop() {
+  // Check button press
+  if (digitalRead(RESET_BUTTON) == LOW) {
+    delay(50);
+    if (digitalRead(RESET_BUTTON) == LOW) {
+      resetReference();
+      delay(500);
+    }
+  }
+  
+  // Check Serial input (type 'Z' to reset)
+  if (Serial.available() > 0) {
+    char input = Serial.read();
+    if (input == 'Z' || input == 'z') {
+      resetReference();
+    }
+  }
+  
+  // Read sensor and calculate current angles
+  readMPU6050();
+  convertMPU6050();
+  calculateCurrentAngles();
+  
+  // Calculate error (difference from reference) if initialized
+  if (initialized) {
+    calculateAngleErrors();
+  }
+  
+  // Output JSON telemetry at 4 Hz for Gyro Monitor app
+  if (millis() - lastDisplay >= TELEMETRY_INTERVAL_MS) {
+    lastDisplay = millis();
+    displayAngles();
+  }
+  server.handleClient();
+}
+
+// ============================================================================
+// Reset - save current angles as reference point
+// ============================================================================
+void resetReference() {
+  refAngleX = current_angleX;
+  refAngleY = current_angleY;
+  refAngleZ = current_angleZ;
+  initialized = true;
+  
+  Serial.println("\n*** REFERENCE ANGLES SET ***");
+  Serial.print("REF_X: ");
+  Serial.print(refAngleX, 1);
+  Serial.print("°  REF_Y: ");
+  Serial.print(refAngleY, 1);
+  Serial.print("°  REF_Z: ");
+  Serial.print(refAngleZ, 1);
+  Serial.println("°");
+  Serial.println("Ready to measure axis angle differences\n");
+}
+
+// ============================================================================
+// Calculate current angle values for X, Y, and Z axes with smoothing
+// ============================================================================
+void calculateCurrentAngles() {
+  float accelXAngle = atan2(accelX_g, sqrt(accelY_g * accelY_g + accelZ_g * accelZ_g)) * RAD_TO_DEG;
+  float accelYAngle = atan2(accelY_g, sqrt(accelX_g * accelX_g + accelZ_g * accelZ_g)) * RAD_TO_DEG;
+  float accelZAngle = atan2(accelZ_g, sqrt(accelX_g * accelX_g + accelY_g * accelY_g)) * RAD_TO_DEG;
+
+  unsigned long now = millis();
+  float dt = (now - lastUpdateTime) / 1000.0;
+  if (dt <= 0.0) {
+    dt = 0.01;
+  }
+  lastUpdateTime = now;
+
+  if (!angleInitialized) {
+    kalmanAngleX = accelXAngle;
+    kalmanAngleY = accelYAngle;
+    kalmanAngleZ = accelZAngle;
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+    angleInitialized = true;
+  } else {
+    kalmanUpdate(kalmanAngleX, kalmanBiasX, kalmanP_X, accelXAngle, gyroX_dps, dt);
+    kalmanUpdate(kalmanAngleY, kalmanBiasY, kalmanP_Y, accelYAngle, gyroY_dps, dt);
+    kalmanUpdate(kalmanAngleZ, kalmanBiasZ, kalmanP_Z, accelZAngle, gyroZ_dps, dt);
+
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+  }
+
+  normalizeAngle(current_angleX);
+  normalizeAngle(current_angleY);
+  normalizeAngle(current_angleZ);
+}
+
+// ============================================================================
+// Kalman filter update for one axis
+// ============================================================================
+void kalmanUpdate(float &angle, float &bias, float P[2][2], float newAngle, float newRate, float dt) {
+  float rate = newRate - bias;
+  angle += dt * rate;
+
+  // Update error covariance
+  P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
+  P[0][1] -= dt * P[1][1];
+  P[1][0] -= dt * P[1][1];
+  P[1][1] += Q_bias * dt;
+
+  // Kalman gain
+  float S = P[0][0] + R_measure;
+  float K0 = P[0][0] / S;
+  float K1 = P[1][0] / S;
+
+  // Update estimate
+  float y = newAngle - angle;
+  angle += K0 * y;
+  bias += K1 * y;
+
+  // Update covariance matrix
+  float P00 = P[0][0];
+  float P01 = P[0][1];
+  float P10 = P[1][0];
+  float P11 = P[1][1];
+
+  P[0][0] = P00 - K0 * P00;
+  P[0][1] = P01 - K0 * P01;
+  P[1][0] = P10 - K1 * P00;
+  P[1][1] = P11 - K1 * P01;
+}
+
+// ============================================================================
+// Calculate error angles (current - reference)
+// ============================================================================
+void calculateAngleErrors() {
+  error_X = current_angleX - refAngleX;
+  error_Y = current_angleY - refAngleY;
+  error_Z = current_angleZ - refAngleZ;
+  
+  // Normalize errors to -180 to 180 range
+  normalizeAngle(error_X);
+  normalizeAngle(error_Y);
+  normalizeAngle(error_Z);
+
+  // Remove very small jitter from the displayed error
+  if (fabs(error_X) < 0.4) error_X = 0.0;
+  if (fabs(error_Y) < 0.4) error_Y = 0.0;
+  if (fabs(error_Z) < 0.4) error_Z = 0.0;
+}
+
+// ============================================================================
+// Normalize angle to -180 to 180 range
+// ============================================================================
+void normalizeAngle(float &angle) {
+  while (angle > 180) angle -= 360;
+  while (angle < -180) angle += 360;
+}
+
+// ============================================================================
+// Output JSON telemetry compatible with Gyro Monitor desktop app
+// ============================================================================
+void displayAngles() {
+  telemetryJson = String("{\"rpm\":0.0,\"tiltX\":") + String(current_angleX, 1) + String(",\"tiltY\":") + String(current_angleY, 1) + String(",\"tiltZ\":") + String(current_angleZ, 1) + String(",\"rotationZ\":") + String(gyroZ_dps, 2) + String(",\"temp\":25.0,\"pwm\":0.0,\"vibration\":0.0") + String(",\"errorX\":") + String(error_X, 1) + String(",\"errorY\":") + String(error_Y, 1) + String(",\"errorZ\":") + String(error_Z, 1) + String("}");
+  Serial.println(telemetryJson);
+}
+
+// ============================================================================
+// Initialize WiFi access point and HTTP telemetry endpoint
+// ============================================================================
+void initWiFi() {
+  WiFi.softAP(WIFI_SSID, WIFI_PASS);
+  IPAddress ip = WiFi.softAPIP();
+  Serial.print("WiFi AP started: ");
+  Serial.println(ip);
+
+  server.on("/telemetry", []() {
+    server.send(200, "application/json", telemetryJson);
+  });
+  server.on("/status", []() {
+    server.send(200, "text/plain", "OK");
+  });
+  server.onNotFound([]() {
+    server.send(404, "text/plain", "Not found");
+  });
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void initMPU6050() {
+  // Wake up sensor
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(PWR_MGMT_1);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  delay(100);
+  
+  // Configure Accelerometer to +/- 8g scale range
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_CONFIG); 
+  Wire.write(0x10); // Hex 10 (Binary 00010000) -> Sets AFS_SEL = 2
+  Wire.endTransmission(true);
+  delay(100);
+  
+  // Configure Gyroscope to +/- 250 dps for best resolution
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(GYRO_CONFIG);
+  Wire.write(0x00); // FS_SEL = 0 -> +/- 250 dps
+  Wire.endTransmission(true);
+  delay(100);
+}
+
+// ============================================================================
+// Read raw sensor values (accel + gyro)
+// ============================================================================
+void readMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_XOUT_H);
+  Wire.endTransmission(false);
+  
+  // Request 14 bytes total (Accel X/Y/Z + Temp + Gyro X/Y/Z)
+  Wire.requestFrom(MPU6050_ADDR, 14, 1);
+  if (Wire.available() < 14) {
+    return;
+  }
+  
+  accelX = (Wire.read() << 8) | Wire.read();
+  accelY = (Wire.read() << 8) | Wire.read();
+  accelZ = (Wire.read() << 8) | Wire.read();
+  
+  // Skip temperature registers
+  Wire.read();
+  Wire.read();
+  
+  gyroX = (Wire.read() << 8) | Wire.read();
+  gyroY = (Wire.read() << 8) | Wire.read();
+  gyroZ = (Wire.read() << 8) | Wire.read();
+}
+
+// ============================================================================
+// Convert to physical units
+// ============================================================================
+void convertMPU6050() {
+  // Since range is set to +/- 8g, LSB sensitivity is 4096 LSB/g
+  accelX_g = (float)accelX / 4096.0;
+  accelY_g = (float)accelY / 4096.0;
+  accelZ_g = (float)accelZ / 4096.0;
+  
+  // Gyro set to +/- 250 dps (131 LSB/dps)
+  gyroX_dps = (float)gyroX / 131.0;
+  gyroY_dps = (float)gyroY / 131.0;
+  gyroZ_dps = (float)gyroZ / 131.0;
+}

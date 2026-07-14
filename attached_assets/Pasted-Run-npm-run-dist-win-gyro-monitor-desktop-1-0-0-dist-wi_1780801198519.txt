@@ -1,0 +1,42 @@
+Run npm run dist:win
+  
+> gyro-monitor-desktop@1.0.0 dist:win
+> electron-builder --win
+  • electron-builder  version=25.1.8 os=10.0.26100
+  • artifacts will be published if draft release exists  reason=CI detected
+  • loaded configuration  file=D:\a\gyro\gyro\desktop\electron-builder.yml
+  • author is missed in the package.json  appPackageFile=D:\a\gyro\gyro\desktop\package.json
+  • executing @electron/rebuild  electronVersion=32.3.3 arch=x64 buildFromSource=false appDir=./
+  • installing native dependencies  arch=x64
+  • completed installing native dependencies
+  • packaging       platform=win32 arch=x64 electron=32.3.3 appOutDir=dist\win-unpacked
+  • downloading     url=https://github.com/electron/electron/releases/download/v32.3.3/electron-v32.3.3-win32-x64.zip size=113 MB parts=8
+  • downloaded      url=https://github.com/electron/electron/releases/download/v32.3.3/electron-v32.3.3-win32-x64.zip duration=1.182s
+  • updating asar integrity executable resource  executablePath=dist\win-unpacked\Gyro Monitor.exe
+  • downloading     url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z size=5.6 MB parts=1
+  • downloaded      url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z duration=583ms
+  ⨯ cannot execute  cause=exit status 1
+                    errorOut=Reserved header is not 0 or image type is not icon for 'D:\a\gyro\gyro\desktop\build\icon.ico'
+Fatal error: Unable to set icon
+                    command='C:\Users\runneradmin\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe' 'D:\a\gyro\gyro\desktop\dist\win-unpacked\Gyro Monitor.exe' --set-version-string FileDescription 'Gyroscope Monitor — Copperbelt University — Desktop App' --set-version-string ProductName 'Gyro Monitor' --set-version-string LegalCopyright 'Copyright © 2025 Copperbelt University' --set-file-version 1.0.0 --set-product-version 1.0.0.0 --set-version-string InternalName 'Gyro Monitor' --set-version-string OriginalFilename '' --set-icon 'D:\a\gyro\gyro\desktop\build\icon.ico'
+                    workingDir=
+  • Above command failed, retrying 3 more times
+  ⨯ cannot execute  cause=exit status 1
+                    errorOut=Reserved header is not 0 or image type is not icon for 'D:\a\gyro\gyro\desktop\build\icon.ico'
+Fatal error: Unable to set icon
+                    command='C:\Users\runneradmin\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe' 'D:\a\gyro\gyro\desktop\dist\win-unpacked\Gyro Monitor.exe' --set-version-string FileDescription 'Gyroscope Monitor — Copperbelt University — Desktop App' --set-version-string ProductName 'Gyro Monitor' --set-version-string LegalCopyright 'Copyright © 2025 Copperbelt University' --set-file-version 1.0.0 --set-product-version 1.0.0.0 --set-version-string InternalName 'Gyro Monitor' --set-version-string OriginalFilename '' --set-icon 'D:\a\gyro\gyro\desktop\build\icon.ico'
+                    workingDir=
+  • Above command failed, retrying 3 more times
+  ⨯ cannot execute  cause=exit status 1
+                    errorOut=Reserved header is not 0 or image type is not icon for 'D:\a\gyro\gyro\desktop\build\icon.ico'
+Fatal error: Unable to set icon
+                    command='C:\Users\runneradmin\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe' 'D:\a\gyro\gyro\desktop\dist\win-unpacked\Gyro Monitor.exe' --set-version-string FileDescription 'Gyroscope Monitor — Copperbelt University — Desktop App' --set-version-string ProductName 'Gyro Monitor' --set-version-string LegalCopyright 'Copyright © 2025 Copperbelt University' --set-file-version 1.0.0 --set-product-version 1.0.0.0 --set-version-string InternalName 'Gyro Monitor' --set-version-string OriginalFilename '' --set-icon 'D:\a\gyro\gyro\desktop\build\icon.ico'
+                    workingDir=
+  • Above command failed, retrying 3 more times
+  ⨯ cannot execute  cause=exit status 1
+                    errorOut=Reserved header is not 0 or image type is not icon for 'D:\a\gyro\gyro\desktop\build\icon.ico'
+Fatal error: Unable to set icon
+                    command='C:\Users\runneradmin\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe' 'D:\a\gyro\gyro\desktop\dist\win-unpacked\Gyro Monitor.exe' --set-version-string FileDescription 'Gyroscope Monitor — Copperbelt University — Desktop App' --set-version-string ProductName 'Gyro Monitor' --set-version-string LegalCopyright 'Copyright © 2025 Copperbelt University' --set-file-version 1.0.0 --set-product-version 1.0.0.0 --set-version-string InternalName 'Gyro Monitor' --set-version-string OriginalFilename '' --set-icon 'D:\a\gyro\gyro\desktop\build\icon.ico'
+                    workingDir=
+  • Above command failed, retrying 3 more times
+Error: Process completed with exit code 1.

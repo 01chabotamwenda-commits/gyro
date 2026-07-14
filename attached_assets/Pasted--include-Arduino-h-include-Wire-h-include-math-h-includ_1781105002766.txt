@@ -1,0 +1,358 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <math.h>
+#include <ESP32Servo.h>
+
+#define MPU6050_ADDR 0x68
+#define RESET_BUTTON 23
+#define ACCEL_XOUT_H 0x3B
+#define GYRO_XOUT_H 0x43
+#define PWR_MGMT_1 0x6B
+#define ACCEL_CONFIG 0x1C
+#define GYRO_CONFIG 0x1B
+
+#define ESC_PIN 4
+const int MOTOR_SPEED_STEP = 2;
+const int RAMP_STEP_MS = 50;
+const int MIN_THROTTLE = 114;
+const int ARM_THROTTLE = 105;
+const int MAX_THROTTLE = 180; // Updated maximum ceiling for math scaling
+
+int16_t accelX, accelY, accelZ;
+int16_t gyroX, gyroY, gyroZ;
+float accelX_g, accelY_g, accelZ_g;
+float gyroX_dps, gyroY_dps, gyroZ_dps;
+
+float current_angleX = 0.0;
+float current_angleY = 0.0;
+float current_angleZ = 0.0;
+
+float kalmanAngleX = 0.0;
+float kalmanBiasX = 0.0;
+float kalmanP_X[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+float kalmanAngleY = 0.0;
+float kalmanBiasY = 0.0;
+float kalmanP_Y[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+float kalmanAngleZ = 0.0;
+float kalmanBiasZ = 0.0;
+float kalmanP_Z[2][2] = {{1.0, 0.0}, {0.0, 1.0}};
+
+const float Q_angle = 0.001f;
+const float Q_bias = 0.003f;
+const float R_measure = 0.03f;
+
+unsigned long lastUpdateTime = 0;
+bool angleInitialized = false;
+
+float refAngleX = 0.0;
+float refAngleY = 0.0;
+float refAngleZ = 0.0;
+bool initialized = false;
+
+float error_X = 0.0;
+float error_Y = 0.0;
+float error_Z = 0.0;
+
+Servo myESC;
+bool motorRunning = false;
+int motorThrottle = 0;
+
+// Telemetry Timing Control
+const unsigned long TELEMETRY_INTERVAL_MS = 250;
+unsigned long lastTelemetryTime = 0;
+
+void normalizeAngle(float &angle) {
+  while (angle > 180) angle -= 360;
+  while (angle < -180) angle += 360;
+}
+
+void kalmanUpdate(float &angle, float &bias, float P[2][2], float newAngle, float newRate, float dt) {
+  float rate = newRate - bias;
+  angle += dt * rate;
+  P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
+  P[0][1] -= dt * P[1][1];
+  P[1][0] -= dt * P[1][1];
+  P[1][1] += Q_bias * dt;
+  float S = P[0][0] + R_measure;
+  float K0 = P[0][0] / S;
+  float K1 = P[1][0] / S;
+  float y = newAngle - angle;
+  angle += K0 * y;
+  bias += K1 * y;
+  float P00 = P[0][0];
+  float P01 = P[0][1];
+  float P10 = P[1][0];
+  float P11 = P[1][1];
+  P[0][0] = P00 - K0 * P00;
+  P[0][1] = P01 - K0 * P01;
+  P[1][0] = P10 - K1 * P00;
+  P[1][1] = P11 - K1 * P01;
+}
+
+void initMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(PWR_MGMT_1);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  delay(100);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_CONFIG);
+  Wire.write(0x10);
+  Wire.endTransmission(true);
+  delay(100);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(GYRO_CONFIG);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  delay(100);
+}
+
+void readMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_XOUT_H);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(MPU6050_ADDR, 14, 1);
+  if (Wire.available() < 14) return;
+
+  accelX = (Wire.read() << 8) | Wire.read();
+  accelY = (Wire.read() << 8) | Wire.read();
+  accelZ = (Wire.read() << 8) | Wire.read();
+  Wire.read();
+  Wire.read();
+  gyroX = (Wire.read() << 8) | Wire.read();
+  gyroY = (Wire.read() << 8) | Wire.read();
+  gyroZ = (Wire.read() << 8) | Wire.read();
+}
+
+void convertMPU6050() {
+  accelX_g = (float)accelX / 4096.0;
+  accelY_g = (float)accelY / 4096.0;
+  accelZ_g = (float)accelZ / 4096.0;
+  gyroX_dps = (float)gyroX / 131.0;
+  gyroY_dps = (float)gyroY / 131.0;
+  gyroZ_dps = (float)gyroZ / 131.0;
+}
+
+void calculateCurrentAngles() {
+  float accelXAngle = atan2(accelX_g, sqrt(accelY_g * accelY_g + accelZ_g * accelZ_g)) * RAD_TO_DEG;
+  float accelYAngle = atan2(accelY_g, sqrt(accelX_g * accelX_g + accelZ_g * accelZ_g)) * RAD_TO_DEG;
+  float accelZAngle = atan2(accelZ_g, sqrt(accelX_g * accelX_g + accelY_g * accelY_g)) * RAD_TO_DEG;
+
+  unsigned long now = millis();
+  float dt = (now - lastUpdateTime) / 1000.0;
+  if (dt <= 0.0) dt = 0.01;
+  lastUpdateTime = now;
+
+  if (!angleInitialized) {
+    kalmanAngleX = accelXAngle;
+    kalmanAngleY = accelYAngle;
+    kalmanAngleZ = accelZAngle;
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+    angleInitialized = true;
+  } else {
+    kalmanUpdate(kalmanAngleX, kalmanBiasX, kalmanP_X, accelXAngle, gyroX_dps, dt);
+    kalmanUpdate(kalmanAngleY, kalmanBiasY, kalmanP_Y, accelYAngle, gyroY_dps, dt);
+    kalmanUpdate(kalmanAngleZ, kalmanBiasZ, kalmanP_Z, accelZAngle, gyroZ_dps, dt);
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+  }
+
+  normalizeAngle(current_angleX);
+  normalizeAngle(current_angleY);
+  normalizeAngle(current_angleZ);
+}
+
+void resetReference() {
+  refAngleX = current_angleX;
+  refAngleY = current_angleY;
+  refAngleZ = current_angleZ;
+  initialized = true;
+  Serial.println("\n--- REFERENCE ANGLES SET ---");
+}
+
+void calculateAngleErrors() {
+  error_X = -(current_angleX - refAngleX);
+  error_Y = current_angleY - refAngleY;
+  error_Z = current_angleZ - refAngleZ;
+
+  normalizeAngle(error_X);
+  normalizeAngle(error_Y);
+  normalizeAngle(error_Z);
+
+  if (fabs(error_X) < 0.4) error_X = 0.0;
+  if (fabs(error_Y) < 0.4) error_Y = 0.0;
+  if (fabs(error_Z) < 0.4) error_Z = 0.0;
+}
+
+void performMotorRamp() {
+  Serial.println("\n--- RAMPING MOTOR UP ---");
+  motorThrottle = MIN_THROTTLE;
+  myESC.write(motorThrottle);
+  delay(100);
+
+  for (int speed = MIN_THROTTLE; speed <= 114; speed++) {
+    myESC.write(speed);
+    motorThrottle = speed;
+    delay(50);
+  }
+  motorThrottle = 114;
+}
+
+void rampToSpeed(int targetSpeed) {
+  if (targetSpeed > MAX_THROTTLE) targetSpeed = MAX_THROTTLE;
+  if (targetSpeed < MIN_THROTTLE) targetSpeed = MIN_THROTTLE;
+
+  if (motorThrottle < targetSpeed) {
+    while (motorThrottle < targetSpeed) {
+      motorThrottle++;
+      myESC.write(motorThrottle);
+      delay(10);
+    }
+  } else if (motorThrottle > targetSpeed) {
+    while (motorThrottle > targetSpeed) {
+      motorThrottle--;
+      myESC.write(motorThrottle);
+      delay(10);
+    }
+  }
+}
+
+void updateMotor() {
+  if (!motorRunning) {
+    motorThrottle = ARM_THROTTLE;
+    myESC.write(ARM_THROTTLE);
+  }
+}
+
+// Formats and sends the JSON packet for the companion app
+void sendAppTelemetry() {
+  // Translate our 105-180 throttle range to a clean 0.00% to 100.00% value
+  float pwmPercent = 0.0;
+  if (motorThrottle > ARM_THROTTLE) {
+    pwmPercent = (float)(motorThrottle - ARM_THROTTLE) / (MAX_THROTTLE - ARM_THROTTLE) * 100.0;
+  }
+
+  // Calculate quick geometric magnitude of overall tilt error
+  float avg_tiltMag = sqrt((error_X * error_X) + (error_Y * error_Y));
+
+  // Build the expected structured app JSON string
+  String telemetryJson = 
+    String("{\"rpm\":0.0,\"tiltX\":") + String(error_X, 1) +
+    String(",\"tiltY\":") + String(error_Y, 1) +
+    String(",\"tiltZ\":") + String(error_Z, 1) +
+    String(",\"rotationZ\":") + String(gyroZ_dps, 2) +
+    String(",\"avgTiltMag\":") + String(avg_tiltMag, 2) +
+    String(",\"temp\":25.0,\"pwm\":") + String(pwmPercent, 2) +
+    String(",\"vibration\":0.0}");
+
+  Serial.println(telemetryJson);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  // App Connection Handshake Packets
+  Serial.println("DEVICE_INFO:esp32LOGIC|VERSION:1.0|COMPONENTS:MPU6050|BAUD:115200");
+  Serial.println("HEALTH:MPU6050=OK");
+  Serial.println("{\"status\":\"boot\",\"msg\":\"Gyro Monitor ESP32 starting\"}");
+
+  Serial.println("\n=================================");
+  Serial.println("  ESP32 IMU & ESC CONTROLLER      ");
+  Serial.println("=================================");
+  Serial.println("Controls:");
+  Serial.println("  [Z] - Reset Reference Angles");
+  Serial.println("  [S] - Start Motor (Ramp up)");
+  Serial.println("  [X] - Stop Motor");
+  Serial.println("  [H] - Increase Speed (+2)");
+  Serial.println("  [L] - Decrease Speed (-2)");
+  Serial.println("=================================\n");
+
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+  Wire.begin(22, 21);
+  initMPU6050();
+  lastUpdateTime = millis();
+
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  myESC.setPeriodHertz(50);
+  myESC.attach(ESC_PIN, 1000, 2000);
+  
+  Serial.println("Arming ESC...");
+  myESC.write(ARM_THROTTLE);
+  delay(3000);
+  Serial.println("ESC Armed and Ready.");
+  lastTelemetryTime = millis();
+}
+
+void loop() {
+  if (digitalRead(RESET_BUTTON) == LOW) {
+    delay(50);
+    if (digitalRead(RESET_BUTTON) == LOW) {
+      Serial.println("\n[Hardware Button] Pressed");
+      resetReference();
+      delay(500);
+    }
+  }
+
+  if (Serial.available() > 0) {
+    char input = Serial.read();
+    if (input == '\n' || input == '\r') return;
+
+    if (input == 'Z' || input == 'z') {
+      Serial.print("\n[Key Pressed: "); Serial.print(input); Serial.println("] -> Resetting Reference");
+      resetReference();
+    } else if (input == 'S' || input == 's') {
+      Serial.print("\n[Key Pressed: "); Serial.print(input); Serial.println("] -> Starting Motor Ramping");
+      motorRunning = true;
+      performMotorRamp();
+    } else if (input == 'X' || input == 'x') {
+      Serial.print("\n[Key Pressed: "); Serial.print(input); Serial.println("] -> Stopping Motor");
+      motorRunning = false;
+      motorThrottle = ARM_THROTTLE; 
+      myESC.write(ARM_THROTTLE);
+    } else if (input == 'H' || input == 'h') {
+      Serial.print("\n[Key Pressed: "); Serial.print(input); Serial.println("] -> Increasing Speed");
+      if (motorRunning) rampToSpeed(motorThrottle + MOTOR_SPEED_STEP);
+    } else if (input == 'L' || input == 'l') {
+      Serial.print("\n[Key Pressed: "); Serial.print(input); Serial.println("] -> Decreasing Speed");
+      if (motorRunning) rampToSpeed(motorThrottle - MOTOR_SPEED_STEP);
+    } else {
+      Serial.print("\n[Key Pressed: "); Serial.print(input); Serial.println("] -> (Unknown Command)");
+    }
+  }
+
+  readMPU6050();
+  convertMPU6050();
+  calculateCurrentAngles();
+
+  if (initialized) {
+    calculateAngleErrors();
+  }
+
+  updateMotor();
+
+  if (millis() - lastTelemetryTime >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryTime = millis();
+
+    // 1. Original human-readable text
+    Serial.print("X: "); Serial.print(error_X, 1);
+    Serial.print(" | Y: "); Serial.print(error_Y, 1);
+    Serial.print(" | Z: "); Serial.print(error_Z, 1);
+    Serial.print(" | Motor: "); Serial.print(motorRunning ? "ON " : "OFF");
+    Serial.print(" | Throttle: "); Serial.println(motorThrottle);
+
+    // 2. Transformed app JSON stream (scaled out of 180 max max limit)
+    sendAppTelemetry();
+  }
+}

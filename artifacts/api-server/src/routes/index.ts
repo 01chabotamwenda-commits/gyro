@@ -1,8 +1,33 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
-
+import sessionRouter from "./session";
+import readingsRouter from "./readings";
+import motorRouter from "./motor";
+import settingsRouter from "./settings";
+import sdcardRouter from "./sdcard";
+import connectivityRouter from "./connectivity";
+import firmwareRouter from "./firmware";
+import analyticsRouter from "./analytics";
+import ingestRouter from "./ingest";
+import irRouter from "./ir";
+import discoveryRouter from "./discovery";
+import verifyRouter from "./verify";
+import dataModeRouter from "./data-mode";
 const router: IRouter = Router();
 
+router.use(analyticsRouter);
+router.use(ingestRouter);
+router.use(irRouter);
 router.use(healthRouter);
+router.use(sessionRouter);
+router.use(readingsRouter);
+router.use(motorRouter);
+router.use(settingsRouter);
+router.use(sdcardRouter);
+router.use(connectivityRouter);
+router.use(firmwareRouter);
+router.use(discoveryRouter);
+router.use(verifyRouter);
+router.use(dataModeRouter);
 
 export default router;

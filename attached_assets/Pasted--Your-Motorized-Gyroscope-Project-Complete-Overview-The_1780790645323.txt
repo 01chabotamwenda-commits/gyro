@@ -1,0 +1,160 @@
+# Your Motorized Gyroscope Project - Complete Overview
+
+## The Big Picture
+
+You're working on an **engineering capstone project** at **Copperbelt University (Zambia)** to build a **motorized gyroscope that can spin continuously for 24+ hours**. It's a team effort with three other mechatronics/electromechanical engineering students, supervised by Mr. Bennet Siyingwa.
+
+---
+
+## The Challenge
+
+**The Goal:** Take an existing gyroscope design and improve it so it can operate non-stop for a full day (or more) without slowing down or breaking.
+
+**Why it's hard:**
+- Friction causes energy loss (heat, vibration, wear)
+- You need precise balance to prevent wobbling
+- The motor needs enough torque to spin the heavy flywheel at high speed
+- Components generate heat that could damage the system
+- You need to monitor everything in real-time to catch problems early
+
+---
+
+## Your Team
+- **Janet Mwaba** (Electromechanical) - 22107919
+- **Luyando Chiyasa** (Mechatronics) - 22111262
+- **Chabota Mwenda** (Mechatronics) - 22176470
+- **Isaac Phiri** (Mechatronics) - 22105748
+
+---
+
+## The Hardware (What You're Building)
+
+### The Rotating Part
+- **Flywheel:** A carefully balanced disk (~0.86-1.2 kg) that stores rotational energy
+- **Shaft:** 8mm steel rod for strength and rigidity
+- **Bearings:** RS608 high-speed ball bearings for low friction
+- **Target Speed:** 8,000-12,000 RPM (really fast!)
+
+### The Power System
+- **Motor:** 950 KV brushless motor (found locally in Zambia!)
+- **ESC:** Electronic Speed Controller to manage power flow
+- **Power Supply:** 12-24V AC-to-DC wall supply (96W) - this is wall-powered, so it can run forever
+- **Motor Coupling:** Flexible connector between motor and flywheel shaft
+
+### The Sensors (For Monitoring)
+- **MPU6050:** 6-axis IMU (accelerometer + gyroscope) - measures tilt angle
+- **IR Speed Sensor:** Counts flywheel rotations to measure RPM
+- **Temperature Sensor:** Monitors heat buildup (prevents overheating)
+- **SD Card Module:** Records all data for analysis
+
+### The Brain
+- **ESP32 DevKit:** Microcontroller that runs the control algorithm, reads sensors, and drives the motor
+
+---
+
+## The Software (How It Works)
+
+### 1. **Control Algorithm** (MATLAB Simulink)
+You built a **feedback control system** that:
+- Reads the tilt angle from the MPU6050 sensor
+- Compares it to the desired level (0°)
+- Adjusts motor power to keep the gyroscope balanced
+- Uses a PID-like controller (proportional-integral-derivative tuning)
+
+**The Physics:** When a spinning gyroscope is tilted, it naturally wants to precess (wobble sideways). Your control system counteracts this by adjusting the motor speed.
+
+### 2. **ESP32 Firmware** (C++ code)
+- Runs the control algorithm in real-time (~1000 times per second)
+- Reads data from sensors via I2C protocol
+- Sends PWM signals to the ESC to control motor speed
+- Logs data to SD card for later analysis
+
+### 3. **Real-Time Visualization** (Python Dash App)
+You just built this! It:
+- Reads sensor data from ESP32 via serial port (COM5 @ 115200 baud)
+- Shows **3 live graphs** (X tilt, Y tilt, Z rotation) in a web browser
+- Updates every 100ms without page refreshes (true real-time streaming)
+- Configurable via .env file (easy to change COM port, baud rate, etc.)
+
+---
+
+## Project Status
+
+### ✅ Completed
+- Design calculations (moment of inertia, gyroscopic torque, energy storage)
+- MATLAB control model with simulation
+- Circuit design in PROTEUS
+- C++ firmware generated from Simulink model
+- All sensor drivers tested
+- **Real-time Python dashboard** (just finished!)
+- Control algorithm verified in simulation
+
+### 🚧 In Progress
+- Component procurement (ordering from AliExpress/Banggood to Zambia)
+- Mechanical assembly (frame, coupling, bearings)
+- Physical system integration and testing
+
+### ⏳ Still To Do
+- Full 24-hour continuous operation test
+- Temperature/vibration monitoring during long runs
+- Final optimizations
+- Team presentation & defense
+
+---
+
+## Why This Matters
+
+### Academic Impact
+- Demonstrates real-world control systems (PID, feedback loops, sensor integration)
+- Shows embedded systems design (microcontroller programming)
+- Proves mechanical engineering principles (gyroscopic physics, dynamics)
+
+### Practical Engineering
+- Building something that actually works in the lab
+- Troubleshooting hardware-software integration
+- Managing project constraints (budget, local sourcing, limited tools)
+
+### Local Innovation
+- Using locally-available components (found KV950 motor in Zambia!)
+- Cost-effective design that uses homogeneous materials
+- Lean manufacturing approach (simple, effective, efficient)
+
+---
+
+## Your Current Workflow
+
+```
+Hardware (Sensors + Motor)
+    ↓
+ESP32 (Reads sensors, runs control algorithm)
+    ↓
+Serial Port (COM5)
+    ↓
+Python Dash App (Your real-time visualization)
+    ↓
+Browser (Live graphs of tilt angles)
+```
+
+**Today's Work:** You just upgraded from a static HTML file that needed browser refresh to a **true real-time Dash application** where graphs update smoothly every 100ms as data streams in. This makes it MUCH easier to debug and monitor the system.
+
+---
+
+## Key Numbers
+
+| Parameter | Value |
+|-----------|-------|
+| **Target Spin Speed** | 8,000-12,000 RPM |
+| **Flywheel Mass** | ~1.2 kg |
+| **Stored Energy** | ~4,983 Joules |
+| **Motor KV Rating** | 950 (found locally!) |
+| **Power Budget** | 96W continuous (from wall supply) |
+| **Update Rate** | 1000 Hz (ESP32) / 100ms (visualization) |
+| **Runtime Goal** | 24+ hours |
+
+---
+
+## Bottom Line
+
+You're building a **sophisticated mechatronic system** that combines mechanical engineering (balanced spinning mass), electrical engineering (motor control, power distribution), and software engineering (embedded firmware + real-time visualization). It's a complete end-to-end engineering project that demonstrates the full cycle of design → simulation → implementation → testing.
+
+And you're doing it **in Zambia**, which adds an extra layer of challenge since you have to source specialty components and be creative with local resources!

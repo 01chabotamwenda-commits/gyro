@@ -1,0 +1,174 @@
+tMOTORpulse":1235.0,"pwm":0.00,"tiltZ":-51.51,"rpm":0,"vibrationRMS":0.7122,"mpuFault":false,"correction":0.0,"escPulse":1235,"intX":0.00,"intY":0.00,"saturated":false,"kp":7.0,"ki":1.0,"kd":1.5,"knl":1.5}
+{"mode":"manual","tiltX":41.49,"tiltY":5.90,"filteredAngleX":-41.21,"filteredAngleY":48.49,"temp":24.83,"heldFINALpulse":0.0,"throttle":1235,"SentMOTORpulse":1235.0,"pwm":0.00,"tiltZ":-51.53,"rpm":0,"vibrationRMS":0.7124,"mpuFault":false,"correction":0.0,"escPulse":1235,"intX":0.00,"intY":0.00,"saturated":false,"kp":7.0,"ki":1.0,"kd":1.5,"knl":1.5}
+{"mode":"manual","tiltX":41.49,"tiltY":5.91,"filteredAngleX":-41.20,"filteredAngleY":48.50,"temp":24.82,"heldFINALpulse":0.0,"throttle":1235,"SentMOTORpulse":1235.0,"pwm":0.00,"tiltZ":-51.53,"rpm":0,"vibrationRMS":0.7125,"mpuFault":false,"correction":0.0,"escPulse":1235,"intX":0.00,"intY":0.00,"saturated":false,"kp":7.0,"ki":1.0,"kd":1.5,"knl":1.5}
+[WiFi CMD] CMD:MANUAL_PULSE:1200
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.631  Y=0.522  Z=-2.422  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1204
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.648  Y=0.531  Z=-2.415  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1208
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.638  Y=0.533  Z=-2.419  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1212
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.643  Y=0.517  Z=-2.413  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1216
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.642  Y=0.528  Z=-2.420  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1220
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.635  Y=0.504  Z=-2.424  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1224
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.642  Y=0.526  Z=-2.416  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1228
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.653  Y=0.534  Z=-2.427  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1232
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.642  Y=0.525  Z=-2.411  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1236
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.633  Y=0.534  Z=-2.414  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1240
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.624  Y=0.534  Z=-2.432  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1244
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.645  Y=0.526  Z=-2.430  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1248
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.635  Y=0.527  Z=-2.415  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1252
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.637  Y=0.511  Z=-2.420  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] h
+STATUS:CMD_UNKNOWN=h
+[WiFi CMD] CMD:MANUAL_PULSE:1256
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.639  Y=0.528  Z=-2.415  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1260
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.641  Y=0.532  Z=-2.422  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1264
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.642  Y=0.522  Z=-2.415  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1268
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.642  Y=0.532  Z=-2.424  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1272
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.643  Y=0.529  Z=-2.425  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1276
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.648  Y=0.516  Z=-2.420  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1280
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.638  Y=0.513  Z=-2.414  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1284
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.637  Y=0.527  Z=-2.421  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1288
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.632  Y=0.525  Z=-2.422  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1292
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.636  Y=0.539  Z=-2.418  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1296
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.624  Y=0.526  Z=-2.413  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] h
+STATUS:CMD_UNKNOWN=h
+[WiFi CMD] CMD:MANUAL_PULSE:1300
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.635  Y=0.520  Z=-2.437  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1304
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.627  Y=0.512  Z=-2.424  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1308
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.637  Y=0.525  Z=-2.422  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1312
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.636  Y=0.519  Z=-2.419  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1316
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.639  Y=0.525  Z=-2.419  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1320
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.625  Y=0.519  Z=-2.413  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1324
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.632  Y=0.527  Z=-2.423  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1328
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.638  Y=0.539  Z=-2.399  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1332
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.632  Y=0.531  Z=-2.414  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1336
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.640  Y=0.533  Z=-2.412  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1340
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.639  Y=0.514  Z=-2.419  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1344
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.630  Y=0.538  Z=-2.416  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1348
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.636  Y=0.533  Z=-2.414  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] CMD:MANUAL_PULSE:1352
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.626  Y=0.523  Z=-2.427  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] h
+STATUS:CMD_UNKNOWN=h
+[WiFi CMD] CMD:MANUAL_PULSE:1356
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.643  Y=0.533  Z=-2.425  (100 samples)
+STATUS:MOTOR=OFF
+[WiFi CMD] h
+STATUS:CMD_UNKNOWN=h
+[WiFi CMD] CMD:MANUAL_PULSE:1360
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.640  Y=0.516  Z=-2.434  (100 samples)

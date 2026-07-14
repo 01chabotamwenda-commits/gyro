@@ -1,0 +1,29 @@
+{
+  "name": "gyro-monitor-desktop",
+  "version": "1.0.0",
+  "description": "Gyroscope Monitor — Copperbelt University — Desktop App",
+  "author": "Copperbelt University",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:frontend": "cross-env BASE_PATH=./ PORT=21211 pnpm --filter @workspace/gyro-dashboard run build",
+    "build:api": "pnpm --filter @workspace/api-server run build",
+    "build:all": "pnpm run build:api && pnpm run build:frontend",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac"
+  },
+  "dependencies": {
+    "serialport": "^12.0.0",
+    "@serialport/parser-readline": "^12.0.0",
+    "better-sqlite3": "^12.11.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

@@ -1,0 +1,14 @@
+right now the session ends immediately there's a disconect from the harware,this behaviour though safe is not good because there is 0 tololerance. lets have the sytem not end but wait a few seconds for the hardware to rconnect but if those seconds elapse then we   end the session.  i find it that depite the staarting pulse being enough to strart the motor i have to manually increaset the pulse atleast twice thats when it starts, edit the firmware so that when i start the motor the system will do this for us by itself, it will ramp up or increase step per 0.25 seconds but only 3 times
+the drcease/increase bottom buttons are changing speed by 50us, is this what i defined as step in the firmware (default step) and in the settins page (preloade default step pulse)?
+startin the session i expect that the system tests the sensors i have is this set in the code? i expect motor to ramp up then ramp down smoothly.
+when i stop motor, ramp the pulse slowly to 0 unless an emergency stop which mustbe a clear cut off power to the motor. i must notice the slow ramp down. 
+Firmware tuning does not have a save & push settings buttons, even the save all settings button is not working; i need to be able to change the starting pulse from settings screen too. add it there.
+In notifications, i only want the notification to just show notifuctaion number budge for the started session. notifactions from other past sessions must not be counted
+The PID button is accessible even when the session is not started but the PID is not working anymore, it was in the attached code just okay. find out what is wrong, when i turn it on, the pwm signal goes 5% or some value when i turn it off the pwm goes to 0 even when i set the motor as running. study the code that worked well before and fix this one.
+The angle output shown in the app's tilt plot is too raw, i want the angles reported to have come from the processed or filtered angles (right before te final single angle was calculated)
+in the flywhell speed plot near the labe 'fit to data' i want there to show the rpm value. then in the stats cards i want where we shere showing rpm value we show sentto motor pulse. this will help me understand clearly what is going on.
+The temperature plot is not gtting temperature readings from the mpu (must do because the temperature sensor is not yet set). 
+The signal lost banner is showing from time to time, its mulfunctionjign, despite clearly everything being okay its not saving any good purspoe. it must only shw when the app has trully discneected from the hardware
+on the critical alerts dialog windows, i dont like the phrases haing things like acknowledge. too strong and to the book. i want you to use everyday English.
+
+MAKE A PLAN MARKDOWN FILE ON HOW TO FIX ALL THIS. THIS WILL HELP YOUR FELLOW AI AGENTS TO FIX THESE PROBLEMS FOR ME WHEN YOU DONT FINISH

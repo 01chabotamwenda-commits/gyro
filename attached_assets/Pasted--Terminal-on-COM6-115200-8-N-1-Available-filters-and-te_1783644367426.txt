@@ -1,0 +1,71 @@
+
+--- Terminal on COM6 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+{"mode":"manual","tiltX":0.00,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6791,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.00,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.03,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":-0.02,"tiltY":0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6782,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":-0.01,"tiltY":0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6787,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xBA45FF00  cmd=0x45  proto=8
+{"mode":"manual","tiltX":-0.03,"tiltY":0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6787,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xB946FF00  cmd=0x46  proto=8
+{"mode":"manual","tiltX":-0.01,"tiltY":0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":-0.01,"rpm":0,"vibrationRMS":0.6788,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":-0.02,"tiltY":0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6785,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xB847FF00  cmd=0x47  proto=8
+{"mode":"manual","tiltX":-0.00,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6791,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[THR] Down → 1200
+{"mode":"manual","tiltX":-0.00,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.00,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.00,"tiltY":0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6792,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.642  Y=0.532  Z=-2.515  (100 samples)
+STATUS:MOTOR=OFF
+{"mode":"manual","tiltX":0.01,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6793,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xBC43FF00  cmd=0x43  proto=8
+{"mode":"manual","tiltX":-0.03,"tiltY":0.03,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6783,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.01,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.00,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xF807FF00  cmd=0x07  proto=8
+{"mode":"manual","tiltX":0.01,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.03,"rpm":0,"vibrationRMS":0.6791,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xEA15FF00  cmd=0x15  proto=8
+{"mode":"manual","tiltX":0.00,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6788,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xF609FF00  cmd=0x09  proto=8
+{"mode":"manual","tiltX":-0.00,"tiltY":0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":-0.00,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":-0.02,"tiltY":0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.00,"rpm":0,"vibrationRMS":0.6780,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":-0.00,"tiltY":0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6782,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[THR] Up → 1230
+{"mode":"manual","tiltX":-0.02,"tiltY":0.02,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":0.00,"tiltZ":0.00,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+--- MOTOR START ---
+STATUS:MOTOR=ON
+{"mode":"manual","tiltX":0.01,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":18.75,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6790,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xF20DFF00  cmd=0x0D  proto=8
+{"mode":"manual","tiltX":-0.01,"tiltY":0.01,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":47.50,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6786,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":-0.01,"tiltY":0.02,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":57.50,"tiltZ":0.03,"rpm":0,"vibrationRMS":0.6785,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xF30CFF00  cmd=0x0C  proto=8
+{"mode":"manual","tiltX":-0.01,"tiltY":0.01,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":57.50,"tiltZ":0.00,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+STATUS:REF_RESET=OK
+[REF] Reset
+{"mode":"manual","tiltX":0.01,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":57.50,"tiltZ":0.00,"rpm":0,"vibrationRMS":0.6787,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xA15EFF00  cmd=0x5E  proto=8
+{"mode":"manual","tiltX":0.02,"tiltY":-0.02,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":57.50,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6788,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.03,"tiltY":-0.03,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":57.50,"tiltZ":0.04,"rpm":0,"vibrationRMS":0.6793,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xF708FF00  cmd=0x08  proto=8
+{"mode":"manual","tiltX":0.01,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1230,"SentMOTORpulse":1230.0,"pwm":57.50,"tiltZ":0.03,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1230,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[THR] Down → 1200
+{"mode":"manual","tiltX":0.02,"tiltY":-0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":50.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6790,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[CAL] Collecting gyro bias samples — keep still...
+[CAL] Offsets: X=-1.654  Y=0.532  Z=-2.515  (100 samples)
+STATUS:MOTOR=OFF
+{"mode":"manual","tiltX":0.04,"tiltY":-0.04,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6793,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xBD42FF00  cmd=0x42  proto=8
+{"mode":"manual","tiltX":0.04,"tiltY":-0.04,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6793,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.00,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6788,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xAD52FF00  cmd=0x52  proto=8
+{"mode":"manual","tiltX":0.01,"tiltY":-0.01,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.01,"rpm":0,"vibrationRMS":0.6792,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+[IR] Unmapped: 0xB54AFF00  cmd=0x4A  proto=8
+{"mode":"manual","tiltX":0.00,"tiltY":0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.03,"rpm":0,"vibrationRMS":0.6788,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.00,"tiltY":0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.03,"rpm":0,"vibrationRMS":0.6783,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.02,"tiltY":-0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6790,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.03,"tiltY":-0.03,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.02,"rpm":0,"vibrationRMS":0.6791,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.02,"tiltY":-0.02,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":-0.01,"rpm":0,"vibrationRMS":0.6789,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.03,"tiltY":-0.03,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":0.04,"rpm":0,"vibrationRMS":0.6794,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}
+{"mode":"manual","tiltX":0.00,"tiltY":-0.00,"heldFINALpulse":0.0,"throttle":1200,"SentMOTORpulse":1200.0,"pwm":0.00,"tiltZ":-0.00,"rpm":0,"vibrationRMS":0.6784,"mpuFault":false,"correction":0.0,"escPulse":1200,"intX":0.00,"intY":0.00,"saturated":true,"kp":3.0,"ki":25.0,"kd":1.0,"knl":1.5}

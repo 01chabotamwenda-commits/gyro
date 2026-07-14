@@ -1,0 +1,84 @@
+appId: "ac.cbu.gyromonitor"
+productName: "Gyro Monitor"
+copyright: "Copyright © 2025 Copperbelt University"
+
+directories:
+  output: dist
+  buildResources: build
+
+# Files that become the Electron app itself
+files:
+  - src/**/*
+  - "!node_modules/**/*.md"
+
+# Bundled resources copied alongside the app binary
+extraResources:
+  # Built Express API server (Node bundle)
+  - from: "../artifacts/api-server/dist/"
+    to: "api-server/"
+    filter: ["**/*"]
+  # better-sqlite3 is externalized (native addon) from the api-server bundle,
+  # so it must be copied in separately. It lives in desktop's own
+  # node_modules (declared as a dependency here) so electron-builder rebuilds
+  # its native binary against Electron's Node ABI automatically.
+  #
+  # Placed at resources/node_modules (one level ABOVE api-server/, not inside
+  # it) rather than api-server/node_modules. Node's module resolution walks
+  # up parent directories looking for node_modules, so anything here is found
+  # automatically by the spawned server regardless of how deep its own
+  # require() call lives. This also transparently covers better-sqlite3's
+  # own runtime dependencies (e.g. "bindings", "file-uri-to-path") without
+  # having to hand-enumerate every transitive native-module dependency —
+  # copying just the top package previously broke because "bindings" (a
+  # dependency OF better-sqlite3) was never copied, so its internal
+  # require("bindings") failed with MODULE_NOT_FOUND at runtime.
+  - from: "node_modules/better-sqlite3"
+    to: "node_modules/better-sqlite3"
+    filter: ["**/*"]
+  - from: "node_modules/bindings"
+    to: "node_modules/bindings"
+    filter: ["**/*"]
+  - from: "node_modules/file-uri-to-path"
+    to: "node_modules/file-uri-to-path"
+    filter: ["**/*"]
+  # Built React frontend (static files)
+  - from: "../artifacts/gyro-dashboard/dist/public/"
+    to: "frontend/"
+    filter: ["**/*"]
+
+# ── Windows ────────────────────────────────────────────────────────────────────
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64, ia32]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  shortcutName: "Gyro Monitor"
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+# ── Linux ──────────────────────────────────────────────────────────────────────
+linux:
+  icon: build/icons/
+  category: Science
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+
+# ── macOS ──────────────────────────────────────────────────────────────────────
+mac:
+  icon: build/icon.png
+  category: public.app-category.utilities
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+
+# Don't auto-publish anywhere
+publish: null

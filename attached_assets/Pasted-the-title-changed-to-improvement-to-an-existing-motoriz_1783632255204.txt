@@ -1,0 +1,87 @@
+the title changed to "improvement to an existing motorized gyroscope prototype", this calls for changes in a lot of things about this thesis. also the attached file i have higlighted some tings i need changed or looked at.
+
+45 minutes ago
+
+18 actions
+I've read through the new uploaded PDF (85 pages) and cross-referenced it against thesis/draft/thesis.md. Here's what I found:
+
+This is a substantially expanded revision, not just a title change — new title: "Improvement to an Existing Motorized Gyroscope Prototype". Compared to the current draft, it adds much more depth: subsection-level literature review (2.1.1 angular momentum, 2.1.2 precession, etc.), a national/industrial relevance discussion (flywheel storage for Zambia's solar gap), a "Report Structure" section (1.7), and per Ch.3 it now promises bearing life calculation, thermal analysis, and structural analysis (not present in the current draft at all).
+
+The 8 highlighted annotations (your inline notes) are:
+
+p.5, Acknowledgements — "remember to acknowledge acus" → need to add an acknowledgement (ACU = a person/entity, need clarification on who).
+p.13, Abstract/Intro area — "8000" flagged "to be edited" → the 8000 RPM figure needs changing.
+p.13 — "10 hours of total operation" flagged "to be changed" → runtime figure needs changing.
+p.15 — "under 4 hours" flagged "where's the proof" → unsupported claim, needs evidence or removal.
+p.16 — "5000 RPM" flagged "revise".
+p.17, Ch.3 methodology outline — "bearing life calculation, thermal analysis, structural analysis" flagged "to be revised".
+p.18 — a citation "(Meriam, Kraige and Bolton, 2016, p. 486)" flagged "revisit" (likely to verify/replace).
+p.21 — the paragraph "Maintaining a 8000 RPM setpoint for 24 unattended hours requires automatic feedback control..." flagged "revise".
+There's a pattern here: several flags cluster around RPM (8000) and runtime (24h / "10 hours" / "under 4 hours") — it looks like the actual achieved numbers may differ from what's written, so these are likely inconsistent/inflated figures that need correcting to match real test data.
+
+I have a clear picture of the document and your flagged items now — ready for your instructions on what to change.
+
+
+Checkpoint made
+42 minutes ago
+
+Worked for 2 minutes
+
+Thesis_Corrected_Citations_(4)_1783630035000.docx
+edit it:
+
+work on it all to fit the title
+We are not using. But at any point, so other calculations regarding both should be done.
+the motor rating is 950KV, replace on all instances stating it to be 2200KV and adjust on subsequent calculations related to it.
+we will not be running the motor at speeds near 8000 rpm, the motor is capable of that but because the weight of the flywheel, The highest recorded speed of the motor while loaded is just over 5000.
+The citations and references have been corrected in this word doocument. use the ones there. The Equations need to be edited, centered and subscript notations should be used when writing them down where necessary.
+28 minutes ago
+
+Show less
+Extracting document text
+
+Extracting document text
+
+Listed files
+
+Installed python-docx
+
+Ran a Python script
+Completing document review
+
+Completing document review
+
+Processed text
+Postponing clarification for context
+
+Postponing clarification for context
+
+Processed text
+Finishing document, clarifying item
+
+Finishing document, clarifying item
+
+Processed text
+Clarifying and confirming details
+
+Clarifying and confirming details
+Your instruction #2 got cut off: "We are not using. But at any point, so other calculations regarding both should be done." Could you clarify what this refers to?
+we are not using bots. so any calculations relating to bolts whether in mass or moment of inertia or anything else relating should be done away with.
+
+Checkpoint made
+27 minutes ago
+
+Worked for 57 seconds
+
+41 actions
+Now let's apply the title change and set up the equation-rendering upgrade.
+
+
+15 actions
+You've reached your monthly free quota limit. It will reset on July 15, 2026.
+
+
+Worked for 18 minutes
+
+Scroll to latest
+You're out of credits.

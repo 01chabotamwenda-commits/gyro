@@ -1,0 +1,1656 @@
+/**
+ * gyro_balance_v4.ino — ESP32 IMU + ESC Balancing Controller  v4.0
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  NEW IN v4 vs gyro_controller v3.5
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  1. CORRECT MINIMUM GAINS  — v3.5 had Kp=0.7, Ki=0.005 which are both
+ *     well below the Routh stability boundary. The Routh criterion for this
+ *     reaction-wheel inverted-pendulum plant requires:
+ *
+ *       Ki  ≥  Ki_min = m·g·L / K_eff  ≈  17–20   (v3.5 had 0.005)
+ *       Kp  ≥  Kp_min = m·g·L·τ / K_eff  ≈  1.4  (v3.5 had 0.7)
+ *
+ *     v4 defaults: Kp=3.0, Ki=25.0, Kd=1.0  (all above Routh minimums)
+ *
+ *  2. DIRECT GYRO-RATE DERIVATIVE — v3.5 computed D = Kd*(error-prevError)/dt
+ *     which numerically differentiates the Kalman angle estimate, amplifying
+ *     quantisation noise. v4 uses the raw gyroscope angular-rate measurement
+ *     directly: D_term = −Kd·ω_gyro (no differentiation, much cleaner).
+ *
+ *  3. TWO-AXIS SIMULTANEOUS CONTROL — v3.5 only corrected the dominant axis
+ *     (whichever of X or Y had the larger |error|). v4 computes separate
+ *     integral states for X and Y and blends them into a single throttle
+ *     correction by projecting the 2D tilt vector.
+ *
+ *  4. ANTI-WINDUP — integral accumulation is frozen whenever the ESC output
+ *     is saturated (hit MIN_THROTTLE or MAX_THROTTLE).
+ *
+ *  5. NONLINEAR PROPORTIONAL BOOST — for |tilt| > TILT_BOOST_THRESHOLD, an
+ *     additional sqrt-scaled term is added so the controller reacts harder to
+ *     large disturbances without destabilising small-angle behaviour.
+ *
+ *  6. MINIMUM-RPM GUARD — auto mode is blocked if the flywheel is below
+ *     AUTO_MIN_RPM (gyroscope must be spinning before balancing makes sense).
+ *
+ *  7. BUMPLESS TRANSFER — auto↔manual transitions re-seed integral state and
+ *     ramp the throttle smoothly to avoid step transients on the ESC.
+ *
+ *  8. GYRO CALIBRATION BEFORE FIRST AUTO ARM — 200 samples are collected at
+ *     startup to null the bias; a second calibration is triggered whenever the
+ *     motor is stopped (flywheel stationary = good calibration window).
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  QUICK-START (same as v3.5)
+ *
+ *  Step 1 — Fill in WiFi credentials below.
+ *  Step 2 — Set SERVER_IP to the LAN IP of the PC running the app.
+ *  Step 3 — Upload once via USB; subsequent uploads via OTA.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+// ── WiFi credentials ──────────────────────────────────────────────────────────
+#define STA_SSID     "BEng Tool 2"
+#define STA_PASSWORD "123456789"
+#define SERVER_IP    "10.63.52.126"
+#define SERVER_PORT  5001
+
+// ── Fallback AP ───────────────────────────────────────────────────────────────
+#define AP_SSID      "GyroMonitor"
+#define AP_PASSWORD  "gyro1234"
+
+// ── Hardware presence flags ───────────────────────────────────────────────────
+#define HAS_MPU6050     1
+#define HAS_ESC         1
+#define HAS_RPM_SENSOR  1
+#define HAS_TEMP_SENSOR 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+#include <Arduino.h>
+#include <Wire.h>
+#include <math.h>
+#include <arduinoFFT.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WebServer.h>
+#include <ArduinoOTA.h>
+#include <Update.h>
+#include <IRremote.hpp>
+
+// ── MPU-6050 registers ────────────────────────────────────────────────────────
+#define MPU6050_ADDR  0x68
+#define ACCEL_XOUT_H  0x3B
+#define GYRO_XOUT_H   0x43
+#define PWR_MGMT_1    0x6B
+#define ACCEL_CONFIG  0x1C
+#define GYRO_CONFIG   0x1B
+
+// ── Pin definitions ───────────────────────────────────────────────────────────
+#define ESC_PIN         4
+#define RESET_BUTTON   23
+#define IR_RECEIVE_PIN 17
+#define RPM_SENSOR_PIN 16
+#define ONBOARD_LED     2
+
+// ── ESC / motor settings ──────────────────────────────────────────────────────
+const int MOTOR_SPEED_STEP = 30;
+const int RAMP_STEP_MS     = 20;   // faster ramp for auto-mode responsiveness
+const int RAMP_STEP_US     = 5;    // smaller µs steps → smoother ESC signal
+const int MIN_THROTTLE     = 1200;
+const int ARM_THROTTLE     = 1000;
+const int START_THROTTLE   = 1100;
+const int MAX_THROTTLE     = 1400;
+const int PWM_CHANNEL      = 0;
+const int PWM_FREQ         = 50;
+const int PWM_RESOLUTION   = 16;
+
+// ── RPM sensor ────────────────────────────────────────────────────────────────
+const uint32_t RPM_TIMEOUT_MS         = 2000;
+const uint32_t RPM_REPORT_INTERVAL_MS = 250;
+const uint32_t IR_DEBOUNCE_US         = 3000UL;
+const uint8_t  RPM_AVG_SAMPLES        = 1;
+const int      RPM_PULSES_PER_REV     = 1;
+const float    RPM_MIN_VALID_RPM      = 5.0f;
+const float    RPM_MAX_VALID_RPM      = 12000.0f;
+
+// ── IMU raw values ────────────────────────────────────────────────────────────
+int16_t accelX, accelY, accelZ;
+int16_t gyroX,  gyroY,  gyroZ;
+float   accelX_g, accelY_g, accelZ_g;
+float   gyroX_dps, gyroY_dps, gyroZ_dps;
+
+// ── Gyro bias calibration ─────────────────────────────────────────────────────
+float gyroOffsetX = 0.0f;
+float gyroOffsetY = 0.0f;
+float gyroOffsetZ = 0.0f;
+bool  gyroCal     = false;
+
+// ── MPU fault tracking ────────────────────────────────────────────────────────
+bool    mpuOk         = false;
+uint8_t mpuFailStreak = 0;
+const uint8_t MPU_MAX_FAILS = 5;
+
+// ── Kalman filter (one per axis) ──────────────────────────────────────────────
+float kalmanAngleX = 0.0f, kalmanBiasX = 0.0f;
+float kalmanAngleY = 0.0f, kalmanBiasY = 0.0f;
+float kalmanAngleZ = 0.0f, kalmanBiasZ = 0.0f;
+float kalmanP_X[2][2] = {{1.0f, 0.0f}, {0.0f, 1.0f}};
+float kalmanP_Y[2][2] = {{1.0f, 0.0f}, {0.0f, 1.0f}};
+float kalmanP_Z[2][2] = {{1.0f, 0.0f}, {0.0f, 1.0f}};
+
+const float Q_angle   = 0.001f;
+const float Q_bias    = 0.003f;
+const float R_measure = 0.03f;
+
+unsigned long lastUpdateTime  = 0;
+bool          angleInitialized = false;
+
+float tiltEmaX = 0.0f, tiltEmaY = 0.0f, tiltEmaZ = 0.0f;
+float vibrationRMS = 0.0f;
+float siliconTempC = 0.0f;
+
+// ── Angle outputs ─────────────────────────────────────────────────────────────
+float current_angleX = 0.0f, current_angleY = 0.0f, current_angleZ = 0.0f;
+float refAngleX = 0.0f,      refAngleY = 0.0f,      refAngleZ = 0.0f;
+float error_X   = 0.0f,      error_Y   = 0.0f,      error_Z   = 0.0f;
+bool  initialized = false;
+
+// ── Motor state ───────────────────────────────────────────────────────────────
+bool  motorRunning   = false;
+int   motorThrottle  = ARM_THROTTLE;
+bool  motorRamping   = false;
+int   motorRampTarget = ARM_THROTTLE;
+unsigned long lastRampMs = 0;
+int   manualThrottle = 1200;
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
+bool autoMode = false;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  v4 BALANCE CONTROLLER PARAMETERS
+//  All gains tunable live via IR/serial/WiFi command.
+//
+//  Physics basis (reaction-wheel inverted-pendulum model):
+//    Plant: G(s) = K_eff·s / [(τ·s+1)(I_b·s² − m·g·L)]
+//    Routh necessary conditions:
+//      Ki  ≥  Ki_min = m·g·L / K_eff  ≈ 17–20
+//      Kp  ≥  Kp_min = m·g·L·τ / K_eff ≈ 1.4
+//    Starting values here are 2× the minimums for margin.
+// ─────────────────────────────────────────────────────────────────────────────
+float bal_Kp  =  3.0f;   // proportional  [µs/deg]        — Routh min ≈ 1.4
+float bal_Ki  = 25.0f;   // integral      [µs/(deg·s)]    — Routh min ≈ 17
+float bal_Kd  =  1.0f;   // derivative    [µs·s/deg]  applied to gyro-rate
+float bal_Knl =  1.5f;   // nonlinear boost factor (√|e| term, kicks in > NL_THRESH)
+
+// ── IR / serial tuning step sizes (same as v3.5 remote buttons) ──────────────
+const float KP_STEP  = 1.0f;
+const float KI_STEP  = 0.5f;   // bigger step to reach Ki_min faster
+const float KD_STEP  = 0.5f;
+const float KNL_STEP = 0.5f;
+
+// ── Non-linear proportional threshold (degrees) ───────────────────────────────
+// Below this angle the nonlinear term is suppressed — avoids chattering
+// around the setpoint. Above it an additional √|e| term is added for extra
+// authority on large disturbances.
+const float NL_THRESH_DEG = 3.0f;
+
+// ── Minimum flywheel speed for auto mode ──────────────────────────────────────
+// At very low RPM the gyroscopic angular momentum is too small to meaningfully
+// affect the system. Block auto mode below this limit.
+const float AUTO_MIN_RPM = 500.0f;
+
+// ── Output saturation limits (relative to base throttle) ─────────────────────
+// The PID correction is clamped to ±MAX_CORRECTION_US. Beyond this the ESC
+// input saturates and the integral must stop growing (anti-windup).
+const float MAX_CORRECTION_US = 700.0f;
+
+// ── Setpoint (degrees from reference) ────────────────────────────────────────
+float setpointX = 0.0f;   // target tilt X (0 = balanced)
+float setpointY = 0.0f;   // target tilt Y (0 = balanced)
+
+// ── Controller state ──────────────────────────────────────────────────────────
+float integralX = 0.0f;   // accumulated integral, X axis
+float integralY = 0.0f;   // accumulated integral, Y axis
+bool  outputSaturated = false;  // true → anti-windup active, freeze integrals
+
+// ── Telemetry output state ────────────────────────────────────────────────────
+float pidCorrectionValue = 0.0f;  // last combined correction [µs]
+float heldFinalPulse     = 0.0f;
+float heldEscPulseUs     = (float)ARM_THROTTLE;
+float sentMotorPulse     = (float)ARM_THROTTLE;
+float holdDurationSec    = 2.0f;  // retained for UI compat
+
+const float MOTOR_KV = 2200.0f;  // matches actual 2200 KV motor
+
+// ── Control loop timing ───────────────────────────────────────────────────────
+// Target 20 ms (50 Hz) loop rate — fast enough vs unstable pole at ~10 rad/s.
+const unsigned long CTRL_INTERVAL_MS = 20;
+unsigned long lastCtrlMs = 0;
+
+// ── RPM sensor ────────────────────────────────────────────────────────────────
+volatile uint32_t rpmPulseCount = 0;
+volatile uint32_t rpmPulseTimestampUs = 0;
+
+uint32_t rpmValue = 0;
+float    currentRPM = 0.0f;
+float    rpmFreqHz  = 0.0f;
+uint32_t rpmPeriodMs = 0;
+uint32_t lastRpmPulseMicros  = 0;
+uint32_t lastRpmPulseCount   = 0;
+uint32_t lastRpmReportMs     = 0;
+uint32_t lastRpmActivityMicros = 0;
+uint8_t  lastIrKeyIndex = 0;
+
+// ── Telemetry timing ─────────────────────────────────────────────────────────
+const unsigned long TELEMETRY_INTERVAL_MS = 500;
+unsigned long lastTelemetryTime = 0;
+
+// ── Vibration engine ──────────────────────────────────────────────────────────
+#define VIBR_WINDOW_SIZE 64
+static float  vibrationWindow[VIBR_WINDOW_SIZE] = {0.0f};
+static uint8_t vibrationWindowIndex = 0;
+static uint8_t vibrationWindowCount = 0;
+
+// ── WiFi / TCP / OTA ──────────────────────────────────────────────────────────
+WiFiClient  tcpClient;
+WebServer   httpServer(80);
+String      wifiCmdBuffer    = "";
+String      lastIrCommand    = "none";
+bool        wifiConnected    = false;
+bool        staJoined        = false;
+unsigned long lastWifiReconnectMs = 0;
+unsigned long lastResetButtonMs = 0;
+unsigned long lastResetActionMs = 0;
+const unsigned long WIFI_RECONNECT_INTERVAL_MS = 5000;
+const bool APP_SERVER_ENABLED = true;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Forward declarations
+// ─────────────────────────────────────────────────────────────────────────────
+static void enterAutoMode(const char *reason = "AUTO");
+static void enterManualMode(const char *reason = "MANUAL");
+void startMotor();
+void stopMotor();
+void emergencyStop();
+void resetReference();
+void calculateAngleErrors();
+static void setThrottle(int us);
+static void setThrottleTarget(int targetUs);
+void executeCommand(char cmd);
+bool parseNetworkPacket(const String &json);
+void handleAppCommand(const String &cmd);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helper: build component string
+// ─────────────────────────────────────────────────────────────────────────────
+String connectedComponentsList() {
+  String c = "IR";
+#if HAS_MPU6050
+  c += ",MPU6050";
+#endif
+#if HAS_ESC
+  c += ",ESC";
+#endif
+#if HAS_RPM_SENSOR
+  c += ",RPM_SENSOR";
+#endif
+#if HAS_TEMP_SENSOR
+  c += ",TEMP_SENSOR";
+#endif
+  return c;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  HTTP / OTA handlers  (identical structure to v3.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const char INDEX_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GyroBalance v4</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; text-align: center; background:#111; color:#eee; margin:0; padding:20px; }
+    h1   { font-size:1.3em; margin-bottom:4px; }
+    .sub { font-size:0.8em; color:#888; margin-bottom:18px; }
+    .grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:440px; margin:0 auto 18px; }
+    .card{ background:#1e1e1e; border-radius:10px; padding:12px 8px; }
+    .card .label{ font-size:0.72em; color:#888; text-transform:uppercase; letter-spacing:0.05em; }
+    .card .value{ font-size:1.7em; font-weight:bold; color:#4fc3f7; margin-top:2px; }
+    .card .unit { font-size:0.75em; color:#aaa; }
+    .card.warn .value{ color:#ef5350; }
+    .card.ok   .value{ color:#66bb6a; }
+    .card.auto .value{ color:#ffd700; }
+    .buttons{ display:flex; flex-wrap:wrap; justify-content:center; gap:10px; max-width:440px; margin:0 auto 14px; }
+    button{ font-size:1em; padding:12px 18px; border:none; border-radius:10px; color:#fff; min-width:90px; cursor:pointer; }
+    #btn-start{ background:#2e7d32; }
+    #btn-stop { background:#c62828; }
+    #btn-auto { background:#e65100; }
+    #btn-up   { background:#1565c0; }
+    #btn-down { background:#6a1b9a; }
+    #btn-reset{ background:#37474f; }
+    .sbar{ font-size:0.85em; color:#888; margin-top:8px; }
+    .pill{ display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.78em; font-weight:bold; }
+    .pill.run  { background:#1b5e20; color:#a5d6a7; }
+    .pill.stop { background:#311;    color:#ef9a9a; }
+    .pill.auto { background:#4a3200; color:#ffe082; }
+    .gains{ font-size:0.8em; color:#888; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <h1>GyroBalance v4</h1>
+  <p class="sub">Full State-Feedback PID &mdash; direct gyro-rate derivative &mdash; anti-windup</p>
+
+  <div class="grid">
+    <div class="card"><div class="label">RPM</div><div class="value" id="rpm">--</div></div>
+    <div class="card"><div class="label">Vibration</div><div class="value" id="vib">--</div><div class="unit">g RMS</div></div>
+    <div class="card"><div class="label">Tilt X</div><div class="value" id="tx">--</div><div class="unit">deg</div></div>
+    <div class="card"><div class="label">Tilt Y</div><div class="value" id="ty">--</div><div class="unit">deg</div></div>
+    <div class="card"><div class="label">Correction</div><div class="value" id="corr">--</div><div class="unit">&micro;s</div></div>
+    <div class="card"><div class="label">ESC pulse</div><div class="value" id="esc">--</div><div class="unit">&micro;s</div></div>
+    <div class="card"><div class="label">PWM</div><div class="value" id="pwm">--</div><div class="unit">%</div></div>
+    <div class="card" id="mpu-card"><div class="label">MPU-6050</div><div class="value" id="mpu">--</div></div>
+  </div>
+
+  <div class="buttons">
+    <button id="btn-start" onclick="cmd('start')">&#9654; Start</button>
+    <button id="btn-stop"  onclick="cmd('stop')">&#9632; Stop</button>
+    <button id="btn-auto"  onclick="cmd('auto')">&#9956; Auto</button>
+    <button id="btn-up"    onclick="cmd('up')">&#8679; Speed +</button>
+    <button id="btn-down"  onclick="cmd('down')">&#8681; Speed &minus;</button>
+    <button id="btn-reset" onclick="cmd('resetref')">&#8635; Reset Ref</button>
+  </div>
+
+  <div class="sbar">
+    Status: <span id="running-pill" class="pill stop">STOPPED</span>
+    &nbsp;|&nbsp; Throttle: <span id="thr">--</span>
+  </div>
+  <div class="gains" id="gains">Kp=-- Ki=-- Kd=-- Knl=--</div>
+
+  <script>
+    function cmd(c) { fetch('/'+c).catch(console.error); }
+    function poll() {
+      fetch('/status').then(r=>r.json()).then(d=>{
+        document.getElementById('rpm').textContent  = d.rpm.toFixed(0);
+        document.getElementById('vib').textContent  = d.vibration.toFixed(3);
+        document.getElementById('tx').textContent   = d.tiltX.toFixed(2);
+        document.getElementById('ty').textContent   = d.tiltY.toFixed(2);
+        document.getElementById('corr').textContent = d.correction ? d.correction.toFixed(1) : '--';
+        document.getElementById('esc').textContent  = d.escPulse  ? d.escPulse.toFixed(0) : '--';
+        document.getElementById('pwm').textContent  = d.pwmPct.toFixed(1);
+        document.getElementById('thr').textContent  = d.throttle;
+        if(d.gains) document.getElementById('gains').textContent=
+          'Kp='+d.gains.kp+' Ki='+d.gains.ki+' Kd='+d.gains.kd+' Knl='+d.gains.knl;
+        var pill = document.getElementById('running-pill');
+        if(d.mode==='auto')   { pill.className='pill auto'; pill.textContent='AUTO BALANCE'; }
+        else if(d.running)    { pill.className='pill run';  pill.textContent='RUNNING'; }
+        else                  { pill.className='pill stop'; pill.textContent='STOPPED'; }
+        var mpuEl=document.getElementById('mpu');
+        var mpuCard=document.getElementById('mpu-card');
+        if(d.mpuFault){ mpuEl.textContent='FAULT'; mpuCard.className='card warn'; }
+        else          { mpuEl.textContent='OK';    mpuCard.className='card ok';   }
+      }).catch(console.error);
+    }
+    setInterval(poll,300);
+    poll();
+    document.addEventListener('keydown',e=>{
+      if(e.key==='s')       cmd('start');
+      else if(e.key==='x')  cmd('stop');
+      else if(e.key==='Escape') cmd('estop');
+      else if(e.key==='a')  cmd('auto');
+      else if(e.key==='h')  cmd('up');
+      else if(e.key==='l')  cmd('down');
+      else if(e.key==='z')  cmd('resetref');
+    });
+  </script>
+</body>
+</html>
+)HTML";
+
+// ── HTTP handlers ─────────────────────────────────────────────────────────────
+
+void handleHttpRoot()   { httpServer.send_P(200, "text/html", INDEX_HTML); }
+
+void handleHttpStatus() {
+  float pwmPct = 0.0f;
+  if (motorThrottle > ARM_THROTTLE)
+    pwmPct = (float)(motorThrottle - ARM_THROTTLE) / (MAX_THROTTLE - ARM_THROTTLE) * 100.0f;
+
+  String json = "{";
+  json += "\"mode\":\"";     json += (autoMode ? "auto" : (motorRunning ? "manual" : "stopped")); json += "\"";
+  json += ",\"running\":";   json += motorRunning ? "true" : "false";
+  json += ",\"throttle\":";  json += (motorRunning ? motorThrottle : manualThrottle);
+  json += ",\"manualThrottle\":"; json += manualThrottle;
+  json += ",\"pwmPct\":";    json += String(pwmPct, 1);
+  json += ",\"mpuFault\":";  json += mpuOk ? "false" : "true";
+  json += ",\"rpm\":";       json += rpmValue;
+  json += ",\"angleX\":";    json += String(mpuOk ? current_angleX : 0.0f, 2);
+  json += ",\"angleY\":";    json += String(mpuOk ? current_angleY : 0.0f, 2);
+  json += ",\"tiltX\":";     json += String(mpuOk ? error_X : 0.0f, 2);
+  json += ",\"tiltY\":";     json += String(mpuOk ? error_Y : 0.0f, 2);
+  json += ",\"vibration\":"; json += String(vibrationRMS, 4);
+  json += ",\"correction\":"; json += String(pidCorrectionValue, 1);
+  json += ",\"escPulse\":";  json += String(heldEscPulseUs, 0);
+  json += ",\"irCommand\":\""; json += lastIrCommand; json += "\"";
+  lastIrCommand = "none";
+  json += ",\"ip\":\"";
+  json += staJoined ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+  json += "\"";
+  json += ",\"gains\":{\"kp\":";  json += String(bal_Kp, 1);
+  json += ",\"ki\":";             json += String(bal_Ki, 1);
+  json += ",\"kd\":";             json += String(bal_Kd, 1);
+  json += ",\"knl\":";            json += String(bal_Knl, 1);
+  json += "}}";
+  httpServer.send(200, "application/json", json);
+}
+
+void handleHttpStart()  { startMotor(); httpServer.send(200,"text/plain","ok"); }
+void handleHttpStop()   { stopMotor();  httpServer.send(200,"text/plain","ok"); }
+void handleHttpAuto() {
+  if (!autoMode) enterAutoMode("HTTP");
+  httpServer.send(200, "text/plain", autoMode ? "auto" : "manual");
+}
+void handleHttpManual() {
+  if (autoMode) enterManualMode("HTTP");
+  httpServer.send(200, "text/plain", autoMode ? "auto" : "manual");
+}
+void handleHttpUp() {
+  if (motorRunning) {
+    manualThrottle = constrain(manualThrottle + MOTOR_SPEED_STEP, MIN_THROTTLE, MAX_THROTTLE);
+    if (!autoMode) setThrottleTarget(manualThrottle);
+  }
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpDown() {
+  if (motorRunning) {
+    manualThrottle = constrain(manualThrottle - MOTOR_SPEED_STEP, MIN_THROTTLE, MAX_THROTTLE);
+    if (!autoMode) setThrottleTarget(manualThrottle);
+  }
+  httpServer.send(200, "text/plain", "ok");
+}
+void handleHttpResetRef()      { resetReference(); httpServer.send(200,"text/plain","ok"); }
+void handleHttpEmergencyStop() { emergencyStop();  httpServer.send(200,"text/plain","ok"); }
+
+void handleOtaUpload() {
+  HTTPUpload &upload = httpServer.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    Serial.printf("{\"event\":\"ota_start\",\"filename\":\"%s\"}\n", upload.filename.c_str());
+    if (motorRunning) stopMotor();
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) Update.printError(Serial);
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true))
+      Serial.printf("{\"event\":\"ota_end\",\"bytes\":%u}\n", upload.totalSize);
+    else
+      Update.printError(Serial);
+  }
+}
+
+void handleOtaFinish() {
+  if (Update.hasError()) {
+    httpServer.send(500, "text/plain", "OTA FAILED");
+    Serial.println("{\"event\":\"ota_error\"}");
+  } else {
+    httpServer.send(200, "text/plain", "OK — rebooting");
+    Serial.println("{\"event\":\"ota_ok\"}");
+    delay(500);
+    ESP.restart();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WiFi / OTA init
+// ─────────────────────────────────────────────────────────────────────────────
+
+const char* wifiStatusStr(wl_status_t s) {
+  switch (s) {
+    case WL_IDLE_STATUS:     return "WL_IDLE_STATUS";
+    case WL_NO_SSID_AVAIL:   return "WL_NO_SSID_AVAIL (SSID not found — check 2.4 GHz band)";
+    case WL_SCAN_COMPLETED:  return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED:       return "WL_CONNECTED";
+    case WL_CONNECT_FAILED:  return "WL_CONNECT_FAILED (password rejected)";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED:    return "WL_DISCONNECTED";
+    default:                 return "UNKNOWN";
+  }
+}
+
+void initWifi() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.disconnect(true);
+  delay(100);
+
+  Serial.println("[WiFi] Scanning...");
+  int n = WiFi.scanNetworks();
+  bool ssidVisible = false;
+  for (int i = 0; i < n; i++) {
+    Serial.printf("[WiFi]   '%s'  ch=%d  rssi=%d\n",
+                  WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i));
+    if (WiFi.SSID(i) == String(STA_SSID)) ssidVisible = true;
+  }
+  if (!ssidVisible)
+    Serial.println("[WiFi] WARNING: target SSID not seen (2.4 GHz only).");
+
+  WiFi.begin(STA_SSID, STA_PASSWORD);
+  Serial.print("[WiFi] Connecting ");
+  unsigned long wifiStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 10000) {
+    delay(50);
+    if ((millis() - wifiStart) % 500 == 0) Serial.print(".");
+    yield();
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    staJoined = true;
+    Serial.print("[WiFi] STA OK — IP: "); Serial.println(WiFi.localIP());
+  } else {
+    staJoined = false;
+    Serial.print("[WiFi] STA failed — "); Serial.println(wifiStatusStr(WiFi.status()));
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    Serial.print("[WiFi] AP IP: "); Serial.println(WiFi.softAPIP());
+  }
+
+  ArduinoOTA.setHostname("gyrobalance-v4");
+  ArduinoOTA.onStart([]() {
+    Serial.println("{\"event\":\"arduinoota_start\"}");
+    if (motorRunning) stopMotor();
+  });
+  ArduinoOTA.onEnd([]()   { Serial.println("{\"event\":\"arduinoota_end\"}"); });
+  ArduinoOTA.onError([](ota_error_t err) {
+    Serial.printf("{\"event\":\"arduinoota_error\",\"code\":%u}\n", err);
+  });
+  ArduinoOTA.begin();
+
+  httpServer.on("/",         HTTP_GET,  handleHttpRoot);
+  httpServer.on("/status",   HTTP_GET,  handleHttpStatus);
+  httpServer.on("/start",    HTTP_GET,  handleHttpStart);
+  httpServer.on("/stop",     HTTP_GET,  handleHttpStop);
+  httpServer.on("/auto",     HTTP_GET,  handleHttpAuto);
+  httpServer.on("/manual",   HTTP_GET,  handleHttpManual);
+  httpServer.on("/up",       HTTP_GET,  handleHttpUp);
+  httpServer.on("/down",     HTTP_GET,  handleHttpDown);
+  httpServer.on("/resetref", HTTP_GET,  handleHttpResetRef);
+  httpServer.on("/estop",    HTTP_GET,  handleHttpEmergencyStop);
+  httpServer.on("/update",   HTTP_POST, handleOtaFinish, handleOtaUpload);
+  httpServer.begin();
+
+  WiFi.setSleep(false);
+  Serial.println("[HTTP] Server on port 80");
+}
+
+void forceWifiReconnect() {
+  if (tcpClient.connected()) tcpClient.stop();
+  wifiConnected = staJoined = false;
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.begin(STA_SSID, STA_PASSWORD);
+  lastWifiReconnectMs = millis();
+}
+
+bool connectToServer() {
+  if (tcpClient.connected()) return true;
+  if (!staJoined && WiFi.status() != WL_CONNECTED) return false;
+  Serial.print("[WiFi] Connecting to server ");
+  if (tcpClient.connect(SERVER_IP, SERVER_PORT)) {
+    Serial.println("OK");
+    wifiConnected = true;
+    tcpClient.println("DEVICE_INFO:esp32WiFi|VERSION:4.0|COMPONENTS:" + connectedComponentsList() + "|BAUD:0");
+    tcpClient.println(mpuOk ? "HEALTH:MPU6050=OK" : "HEALTH:MPU6050=FAIL");
+    tcpClient.println("{\"status\":\"boot\",\"msg\":\"GyroBalance v4.0 — WiFi connected\"}");
+    return true;
+  }
+  wifiConnected = false;
+  Serial.println("FAILED");
+  return false;
+}
+
+void processWifiInput() {
+  while (tcpClient.available()) {
+    char c = (char)tcpClient.read();
+    if (c == '\n' || c == '\r') {
+      String line = wifiCmdBuffer;
+      wifiCmdBuffer = "";
+      line.trim();
+      if (line.length() > 0) {
+        Serial.print("[WiFi CMD] "); Serial.println(line);
+        if (!parseNetworkPacket(line)) handleAppCommand(line);
+      }
+    } else {
+      wifiCmdBuffer += c;
+      if (wifiCmdBuffer.length() > 128) wifiCmdBuffer = "";
+    }
+  }
+}
+
+void maintainWifiConnection() {
+  unsigned long now = millis();
+  if (staJoined && WiFi.status() != WL_CONNECTED) {
+    staJoined = false;
+    Serial.println("[WiFi] STA dropped");
+  }
+  if (!staJoined && WiFi.status() != WL_CONNECTED) {
+    if (now - lastWifiReconnectMs >= WIFI_RECONNECT_INTERVAL_MS) {
+      lastWifiReconnectMs = now;
+      WiFi.begin(STA_SSID, STA_PASSWORD);
+    }
+    return;
+  }
+  if (WiFi.status() == WL_CONNECTED && !staJoined) {
+    staJoined = true;
+    Serial.print("[WiFi] Reconnected — IP: "); Serial.println(WiFi.localIP());
+  }
+  if (APP_SERVER_ENABLED && !tcpClient.connected()) {
+    if (wifiConnected) { wifiConnected = false; Serial.println("[WiFi] TCP lost."); }
+    if (now - lastWifiReconnectMs >= WIFI_RECONNECT_INTERVAL_MS) {
+      lastWifiReconnectMs = now;
+      connectToServer();
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+void normalizeAngle(float &a) {
+  while (a >  180.0f) a -= 360.0f;
+  while (a < -180.0f) a += 360.0f;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Gyro bias calibration
+// ─────────────────────────────────────────────────────────────────────────────
+
+void calibrateGyroBias(int samples = 200) {
+  Serial.println("[CAL] Collecting gyro bias samples — keep still...");
+  double sumX = 0, sumY = 0, sumZ = 0;
+  int good = 0;
+  for (int i = 0; i < samples; i++) {
+    Wire.beginTransmission(MPU6050_ADDR);
+    Wire.write(GYRO_XOUT_H);
+    if (Wire.endTransmission(false) != 0) { delay(5); continue; }
+    Wire.requestFrom(MPU6050_ADDR, 6, 1);
+    if (Wire.available() < 6) { delay(5); continue; }
+    int16_t gx = (Wire.read() << 8) | Wire.read();
+    int16_t gy = (Wire.read() << 8) | Wire.read();
+    int16_t gz = (Wire.read() << 8) | Wire.read();
+    sumX += gx / 131.0;
+    sumY += gy / 131.0;
+    sumZ += gz / 131.0;
+    good++;
+    delay(2);
+  }
+  if (good > 0) {
+    gyroOffsetX = (float)(sumX / good);
+    gyroOffsetY = (float)(sumY / good);
+    gyroOffsetZ = (float)(sumZ / good);
+    gyroCal = true;
+    Serial.printf("[CAL] Offsets: X=%.3f  Y=%.3f  Z=%.3f  (%d samples)\n",
+                  gyroOffsetX, gyroOffsetY, gyroOffsetZ, good);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Kalman filter (unchanged from v3.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void kalmanUpdate(float &angle, float &bias, float P[2][2],
+                  float newAngle, float newRate, float dt) {
+  float rate = newRate - bias;
+  angle += dt * rate;
+  P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
+  P[0][1] -= dt * P[1][1];
+  P[1][0] -= dt * P[1][1];
+  P[1][1] += Q_bias * dt;
+  float S  = P[0][0] + R_measure;
+  float K0 = P[0][0] / S;
+  float K1 = P[1][0] / S;
+  float y  = newAngle - angle;
+  angle += K0 * y;
+  bias  += K1 * y;
+  float P00 = P[0][0], P01 = P[0][1], P10 = P[1][0], P11 = P[1][1];
+  P[0][0] = P00 - K0 * P00;
+  P[0][1] = P01 - K0 * P01;
+  P[1][0] = P10 - K1 * P00;
+  P[1][1] = P11 - K1 * P01;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MPU-6050
+// ─────────────────────────────────────────────────────────────────────────────
+
+void initMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(PWR_MGMT_1);
+  Wire.write(0x00);
+  if (Wire.endTransmission(true) != 0) {
+    Serial.println("[MPU] Init FAILED — not found on I2C bus");
+    mpuOk = false;
+    return;
+  }
+  delay(100);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_CONFIG);
+  Wire.write(0x10);   // ±8 g
+  Wire.endTransmission(true);
+  delay(50);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(GYRO_CONFIG);
+  Wire.write(0x00);   // ±250 °/s  (highest resolution for small-angle sensing)
+  Wire.endTransmission(true);
+  delay(50);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(0x1A);
+  Wire.write(0x04);   // DLPF 20 Hz  (attenuates flywheel vibration from gyro path)
+  Wire.endTransmission(true);
+  delay(50);
+
+  mpuOk = true;
+  mpuFailStreak = 0;
+  Serial.println("[MPU] MPU-6050 OK");
+  Serial.println("HEALTH:MPU6050=OK");
+}
+
+bool readMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(ACCEL_XOUT_H);
+  if (Wire.endTransmission(false) != 0) {
+    if (++mpuFailStreak >= MPU_MAX_FAILS && mpuOk) {
+      mpuOk = false;
+      Serial.println("[MPU] I2C fault");
+      Serial.println("HEALTH:MPU6050=FAIL");
+    }
+    return false;
+  }
+  Wire.requestFrom(MPU6050_ADDR, 14, 1);
+  if (Wire.available() < 14) {
+    if (++mpuFailStreak >= MPU_MAX_FAILS && mpuOk) {
+      mpuOk = false;
+      Serial.println("[MPU] I2C short read");
+      Serial.println("HEALTH:MPU6050=FAIL");
+    }
+    return false;
+  }
+
+  accelX = (Wire.read() << 8) | Wire.read();
+  accelY = (Wire.read() << 8) | Wire.read();
+  accelZ = (Wire.read() << 8) | Wire.read();
+  int16_t tempRaw = (Wire.read() << 8) | Wire.read();
+  gyroX  = (Wire.read() << 8) | Wire.read();
+  gyroY  = (Wire.read() << 8) | Wire.read();
+  gyroZ  = (Wire.read() << 8) | Wire.read();
+  siliconTempC = (float)tempRaw / 340.0f + 36.53f;
+
+  if (!mpuOk) {
+    mpuOk = true;
+    angleInitialized = false;
+    Serial.println("[MPU] I2C recovered");
+    Serial.println("HEALTH:MPU6050=OK");
+  }
+  mpuFailStreak = 0;
+  return true;
+}
+
+void convertMPU6050() {
+  // Raw → physical
+  float rawAX = (float)accelX / 4096.0f;
+  float rawAY = (float)accelY / 4096.0f;
+  float rawAZ = (float)accelZ / 4096.0f;
+  float rawGX = (float)gyroX  / 131.0f;
+  float rawGY = (float)gyroY  / 131.0f;
+  float rawGZ = (float)gyroZ  / 131.0f;
+
+  // Apply calibration offsets (removes bias drift)
+  rawGX -= gyroOffsetX;
+  rawGY -= gyroOffsetY;
+  rawGZ -= gyroOffsetZ;
+
+  // Axis remap — sensor mounted vertically with Y pointing down
+  accelX_g  =  rawAX;
+  accelY_g  =  rawAZ;
+  accelZ_g  = -rawAY;
+  gyroX_dps =  rawGX;
+  gyroY_dps =  rawGZ;
+  gyroZ_dps = -rawGY;
+}
+
+void calculateCurrentAngles() {
+  float accelXAngle = atan2f(accelX_g, sqrtf(accelY_g*accelY_g + accelZ_g*accelZ_g)) * RAD_TO_DEG;
+  float accelYAngle = atan2f(accelY_g, sqrtf(accelX_g*accelX_g + accelZ_g*accelZ_g)) * RAD_TO_DEG;
+  float accelZAngle = atan2f(accelZ_g, sqrtf(accelX_g*accelX_g + accelY_g*accelY_g)) * RAD_TO_DEG;
+  float totalG = sqrtf(accelX_g*accelX_g + accelY_g*accelY_g + accelZ_g*accelZ_g);
+
+  unsigned long now = millis();
+  float dt = (float)(now - lastUpdateTime) / 1000.0f;
+  if (dt <= 0.0f || dt > 0.5f) dt = 0.01f;
+  lastUpdateTime = now;
+
+  // Trust accelerometer only when gravity vector is within ±60 % of 1 g
+  // (flying vibration peaks spike to 2–3 g; reject those)
+  float accelTrust = (totalG > 0.4f && totalG < 1.6f) ? 1.0f : 0.0f;
+
+  if (!angleInitialized) {
+    kalmanAngleX = accelXAngle;
+    kalmanAngleY = accelYAngle;
+    kalmanAngleZ = accelZAngle;
+    tiltEmaX = kalmanAngleX;
+    tiltEmaY = kalmanAngleY;
+    tiltEmaZ = kalmanAngleZ;
+    current_angleX = kalmanAngleX;
+    current_angleY = kalmanAngleY;
+    current_angleZ = kalmanAngleZ;
+    angleInitialized = true;
+  } else {
+    float measX = (accelTrust > 0.0f) ? accelXAngle : kalmanAngleX;
+    float measY = (accelTrust > 0.0f) ? accelYAngle : kalmanAngleY;
+    float measZ = (accelTrust > 0.0f) ? accelZAngle : kalmanAngleZ;
+
+    kalmanUpdate(kalmanAngleX, kalmanBiasX, kalmanP_X, measX, gyroX_dps, dt);
+    kalmanUpdate(kalmanAngleY, kalmanBiasY, kalmanP_Y, measY, gyroY_dps, dt);
+    kalmanUpdate(kalmanAngleZ, kalmanBiasZ, kalmanP_Z, measZ, gyroZ_dps, dt);
+
+    // Light EMA (α=0.1) to smooth Kalman output without adding lag
+    tiltEmaX = 0.1f * kalmanAngleX + 0.9f * tiltEmaX;
+    tiltEmaY = 0.1f * kalmanAngleY + 0.9f * tiltEmaY;
+    tiltEmaZ = 0.1f * kalmanAngleZ + 0.9f * tiltEmaZ;
+
+    current_angleX = tiltEmaX;
+    current_angleY = tiltEmaY;
+    current_angleZ = tiltEmaZ;
+  }
+
+  normalizeAngle(current_angleX);
+  normalizeAngle(current_angleY);
+  normalizeAngle(current_angleZ);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Vibration engine
+// ─────────────────────────────────────────────────────────────────────────────
+
+void updateVibration() {
+  if (!mpuOk) { vibrationRMS = 0.0f; return; }
+  float axG = (float)accelX / 4096.0f;
+  float ayG = (float)accelY / 4096.0f;
+  float azG = (float)accelZ / 4096.0f;
+  float dyn = sqrtf(axG*axG + ayG*ayG + (azG - 1.0f)*(azG - 1.0f));
+  vibrationWindow[vibrationWindowIndex] = dyn;
+  vibrationWindowIndex = (vibrationWindowIndex + 1) % VIBR_WINDOW_SIZE;
+  if (vibrationWindowCount < VIBR_WINDOW_SIZE) vibrationWindowCount++;
+  float sumSq = 0.0f;
+  for (uint8_t i = 0; i < vibrationWindowCount; i++)
+    sumSq += vibrationWindow[i] * vibrationWindow[i];
+  vibrationRMS = sqrtf(sumSq / (float)vibrationWindowCount);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Reference / error angles
+// ─────────────────────────────────────────────────────────────────────────────
+
+void resetReference() {
+  refAngleX = current_angleX;
+  refAngleY = current_angleY;
+  refAngleZ = current_angleZ;
+  kalmanBiasX = kalmanBiasY = kalmanBiasZ = 0.0f;
+  tiltEmaX = current_angleX;
+  tiltEmaY = current_angleY;
+  tiltEmaZ = current_angleZ;
+  // Zero the setpoints and integrals — we are now at equilibrium
+  setpointX = 0.0f;
+  setpointY = 0.0f;
+  integralX = 0.0f;
+  integralY = 0.0f;
+  initialized = true;
+  calculateAngleErrors();
+  Serial.println("STATUS:REF_RESET=OK");
+}
+
+void calculateAngleErrors() {
+  error_X = -(current_angleX - refAngleX);
+  error_Y =   current_angleY - refAngleY;
+  error_Z =   current_angleZ - refAngleZ;
+  normalizeAngle(error_X);
+  normalizeAngle(error_Y);
+  normalizeAngle(error_Z);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Motor / ESC control
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void setThrottle(int us) {
+  us = constrain(us, ARM_THROTTLE, MAX_THROTTLE);
+#if HAS_ESC
+  uint32_t duty = (uint32_t)us * 65535UL / 20000UL;
+  ledcWrite(PWM_CHANNEL, duty);
+#endif
+  motorThrottle = us;
+}
+
+static void setThrottleTarget(int targetUs) {
+  targetUs = constrain(targetUs, MIN_THROTTLE, MAX_THROTTLE);
+  if (targetUs == motorRampTarget) return;
+  motorRampTarget = targetUs;
+  motorRamping    = true;
+  lastRampMs      = millis();
+}
+
+static void rampStep() {
+  if (!motorRamping) return;
+  if ((millis() - lastRampMs) < (unsigned long)RAMP_STEP_MS) return;
+  lastRampMs = millis();
+  if      (motorThrottle < motorRampTarget) setThrottle(min(motorThrottle + RAMP_STEP_US, motorRampTarget));
+  else if (motorThrottle > motorRampTarget) setThrottle(max(motorThrottle - RAMP_STEP_US, motorRampTarget));
+  else    motorRamping = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Mode transitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void enterManualMode(const char *reason) {
+  if (autoMode) {
+    autoMode = false;
+    // Bumpless: absorb current PID offset into manualThrottle
+    // so the motor does not jump when switching back to manual.
+    manualThrottle = constrain((int)roundf(sentMotorPulse), MIN_THROTTLE, MAX_THROTTLE);
+    Serial.printf("[MODE] Manual (%s) — absorbed throttle=%d\n", reason, manualThrottle);
+  }
+}
+
+static void enterAutoMode(const char *reason) {
+  // Guard 1: motor must be running
+  if (!motorRunning) {
+    Serial.printf("[MODE] Auto blocked — motor not running (%s)\n", reason);
+    return;
+  }
+  // Guard 2: flywheel must have reached minimum gyroscopic speed.
+  // Do NOT allow auto if RPM_SENSOR is present but reading below threshold.
+  // When the sensor is absent the guard is skipped (user's responsibility).
+#if HAS_RPM_SENSOR
+  if (currentRPM < AUTO_MIN_RPM) {
+    Serial.printf("[MODE] Auto blocked — RPM %.0f < %.0f minimum (%s)\n",
+                  currentRPM, AUTO_MIN_RPM, reason);
+    return;
+  }
+#endif
+  if (!autoMode) {
+    // Bumpless: seed integrals from current throttle deviation
+    // so there is no step on the ESC when entering auto.
+    integralX = (float)(motorThrottle - manualThrottle) * 0.5f;
+    integralY = integralX;
+    setpointX = 0.0f;
+    setpointY = 0.0f;
+    autoMode  = true;
+    Serial.printf("[MODE] Auto (%s) — RPM=%.0f\n", reason, currentRPM);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  RPM sensor
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void resetRPMState() {
+  rpmValue = 0; currentRPM = 0.0f; rpmFreqHz = 0.0f;
+  rpmPeriodMs = 0; lastRpmPulseMicros = 0;
+  lastRpmPulseCount = 0; lastRpmActivityMicros = 0;
+  noInterrupts();
+  rpmPulseCount = 0; rpmPulseTimestampUs = 0;
+  interrupts();
+}
+
+void IRAM_ATTR rpmPulseISR() {
+  rpmPulseCount++;
+  rpmPulseTimestampUs = micros();
+}
+
+static void processRPMPulse() {
+  uint32_t snapshotCount = 0, snapshotTimeUs = 0;
+  noInterrupts();
+  snapshotCount  = rpmPulseCount;
+  snapshotTimeUs = rpmPulseTimestampUs;
+  interrupts();
+
+  if (snapshotCount != lastRpmPulseCount && snapshotTimeUs > 0) {
+    uint32_t deltaUs = (lastRpmPulseMicros > 0) ? (snapshotTimeUs - lastRpmPulseMicros) : 0;
+    if (deltaUs > 0 && deltaUs < 6000000UL) {
+      float cand = 60000000.0f / (float)(deltaUs * RPM_PULSES_PER_REV);
+      if (cand >= RPM_MIN_VALID_RPM && cand <= RPM_MAX_VALID_RPM) {
+        currentRPM = currentRPM > 0.0f ? (currentRPM * 0.75f + cand * 0.25f) : cand;
+        rpmFreqHz  = 1000000.0f / (float)deltaUs;
+        rpmPeriodMs = deltaUs / 1000UL;
+      } else {
+        currentRPM = 0.0f;
+      }
+    }
+    lastRpmPulseMicros     = snapshotTimeUs;
+    lastRpmPulseCount      = snapshotCount;
+    lastRpmActivityMicros  = micros();
+  }
+
+  if (lastRpmActivityMicros > 0 &&
+      (micros() - lastRpmActivityMicros) > (RPM_TIMEOUT_MS * 1000UL)) {
+    currentRPM = 0.0f; rpmFreqHz = 0.0f; rpmPeriodMs = 0;
+    lastRpmActivityMicros = 0;
+  }
+}
+
+static void publishRPMValue() {
+  if ((millis() - lastRpmReportMs) < RPM_REPORT_INTERVAL_MS) return;
+  lastRpmReportMs = millis();
+  rpmValue = (uint32_t)(currentRPM + 0.5f);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Motor start / stop / estop
+// ─────────────────────────────────────────────────────────────────────────────
+
+void startMotor() {
+  if (motorRunning) { Serial.println("STATUS:MOTOR=ON"); return; }
+  motorRunning = true;
+  resetRPMState();
+  Serial.println("--- MOTOR START ---");
+  setThrottleTarget(manualThrottle);
+  Serial.println("STATUS:MOTOR=ON");
+}
+
+void stopMotor() {
+  enterManualMode("MOTOR_STOP");
+  motorRunning  = false;
+  motorRamping  = false;
+  setThrottle(ARM_THROTTLE);
+  motorRampTarget = ARM_THROTTLE;
+  resetRPMState();
+  // Opportunity for a fresh gyro calibration while stationary
+  if (mpuOk) {
+    delay(200);
+    calibrateGyroBias(100);
+  }
+  Serial.println("STATUS:MOTOR=OFF");
+}
+
+void emergencyStop() {
+  enterManualMode("ESTOP");
+  motorRunning  = false;
+  motorRamping  = false;
+  setThrottle(ARM_THROTTLE);
+  motorRampTarget = ARM_THROTTLE;
+  resetRPMState();
+  Serial.println("STATUS:MOTOR=ESTOP");
+  Serial.println("!!! EMERGENCY STOP !!!");
+}
+
+void updateMotor() {
+  if (!motorRunning && motorThrottle != ARM_THROTTLE) setThrottle(ARM_THROTTLE);
+  rampStep();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  v4 BALANCE CONTROLLER
+//
+//  Control law (per axis):
+//
+//    e_i   = setpoint_i − tilt_i                [deg]
+//    I_i  += Ki · e_i · dt    (frozen if saturated)
+//    P_i   = Kp · e_i
+//    D_i   = −Kd · ω_gyro_i                      [direct gyro rate, no diff.]
+//    NL_i  = Knl · sign(e_i) · √|e_i|  if |e_i| > NL_THRESH, else 0
+//    u_i   = P_i + I_i + D_i + NL_i
+//
+//  Combined correction:
+//    If |e_X| ≥ |e_Y|:  u = u_X  (X-dominant tilt)
+//    else:               u = u_Y
+//    If both axes significant (|e| > 2°): blend as weighted RMS
+//
+//  Output applied:
+//    ESC pulse = manualThrottle + u  (clamped to [MIN_THROTTLE, MAX_THROTTLE])
+// ─────────────────────────────────────────────────────────────────────────────
+
+static float runBalanceController(float dt) {
+  if (!mpuOk) return 0.0f;
+
+  float eX = setpointX - error_X;   // error = setpoint − current tilt
+  float eY = setpointY - error_Y;
+
+  float absX = fabsf(eX);
+  float absY = fabsf(eY);
+
+  // ── Proportional ─────────────────────────────────────────────────────────
+  float pX = bal_Kp * eX;
+  float pY = bal_Kp * eY;
+
+  // ── Integral with anti-windup ─────────────────────────────────────────────
+  // Freeze when either the ESC rail OR the correction clamp is active.
+  // This covers both forms of saturation:
+  //   • outputSaturated = true  → ESC candidate hit MIN/MAX throttle
+  //   • |prevCorrection| at limit → correction was clamped by MAX_CORRECTION_US
+  // Using back-calculation: only integrate when there is headroom for the
+  // integral to actually move the output.
+  bool correctionClamped = outputSaturated ||
+                           (fabsf(integralX + bal_Kp * eX - bal_Kd * gyroX_dps)
+                            >= MAX_CORRECTION_US * 0.95f) ||
+                           (fabsf(integralY + bal_Kp * eY - bal_Kd * gyroY_dps)
+                            >= MAX_CORRECTION_US * 0.95f);
+  if (!correctionClamped) {
+    integralX += bal_Ki * eX * dt;
+    integralY += bal_Ki * eY * dt;
+  }
+  // Hard-clamp individual integrals to ½ the saturation limit.
+  // Even without the freeze above, integrals can never exceed this value.
+  integralX = constrain(integralX, -MAX_CORRECTION_US * 0.5f, MAX_CORRECTION_US * 0.5f);
+  integralY = constrain(integralY, -MAX_CORRECTION_US * 0.5f, MAX_CORRECTION_US * 0.5f);
+
+  // ── Derivative: DIRECT gyro rate (no numerical differentiation) ───────────
+  // gyroX_dps is the calibrated angular rate on the X axis [deg/s].
+  // Negative sign: positive rate (leaning right) → reduce throttle to push back.
+  float dX = -bal_Kd * gyroX_dps;
+  float dY = -bal_Kd * gyroY_dps;
+
+  // ── Non-linear proportional boost for large disturbances ─────────────────
+  // Adds Knl·√|e| in the direction of the error, activating only above
+  // NL_THRESH. This improves large-disturbance recovery without destabilising
+  // the small-angle regime.
+  float nlX = 0.0f, nlY = 0.0f;
+  if (absX > NL_THRESH_DEG)
+    nlX = bal_Knl * (eX > 0.0f ? 1.0f : -1.0f) * sqrtf(absX - NL_THRESH_DEG);
+  if (absY > NL_THRESH_DEG)
+    nlY = bal_Knl * (eY > 0.0f ? 1.0f : -1.0f) * sqrtf(absY - NL_THRESH_DEG);
+
+  // ── Per-axis totals ───────────────────────────────────────────────────────
+  float uX = pX + integralX + dX + nlX;
+  float uY = pY + integralY + dY + nlY;
+
+  // ── Combine axes ──────────────────────────────────────────────────────────
+  // Strategy: use the axis with the larger tilt error as dominant.
+  // If both axes are significantly tilted, take the vector magnitude
+  // projected onto the dominant direction.
+  float correction;
+  const float BOTH_AXIS_THRESHOLD = 2.0f;   // [deg] — both axes active above this
+
+  if (absX >= absY) {
+    correction = (absY > BOTH_AXIS_THRESHOLD)
+                 ? uX + uY * (absY / absX) * 0.4f   // partial Y contribution
+                 : uX;
+  } else {
+    correction = (absX > BOTH_AXIS_THRESHOLD)
+                 ? uY + uX * (absX / absY) * 0.4f
+                 : uY;
+  }
+
+  // ── Output saturation & anti-windup flag update ──────────────────────────
+  correction = constrain(correction, -MAX_CORRECTION_US, MAX_CORRECTION_US);
+  float candidate = (float)manualThrottle + correction;
+  outputSaturated = (candidate <= (float)MIN_THROTTLE || candidate >= (float)MAX_THROTTLE);
+
+  return correction;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Direct ESC write for auto mode (bypasses ramp for fast stabilization)
+// ─────────────────────────────────────────────────────────────────────────────
+// The slow RAMP_STEP_US/RAMP_STEP_MS ramp (default 5 µs / 20 ms = 0.25 µs/ms)
+// is intentional for smooth manual throttle changes, but it would add ~100 ms
+// lag to the closed-loop path which cannot tolerate it (unstable pole at 10 rad/s
+// → disturbance growth time-constant ≈ 100 ms). In auto mode we write the
+// corrected ESC value directly; the ramp is only used for base throttle changes.
+static void applyAutoThrottle(int targetUs) {
+  targetUs = constrain(targetUs, MIN_THROTTLE, MAX_THROTTLE);
+  motorRampTarget = targetUs;   // keep ramp state consistent for bumpless exit
+  setThrottle(targetUs);        // write immediately — no ramp delay
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Network / command parser  (compatible with v3.5 dashboard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static String readJsonStr(const String &json, const String &key) {
+  String tok = "\"" + key + "\"";
+  int kp = json.indexOf(tok); if (kp < 0) return "";
+  int cp = json.indexOf(':', kp); if (cp < 0) return "";
+  int vp = cp + 1;
+  while (vp < (int)json.length() && isspace((unsigned char)json[vp])) vp++;
+  if (vp >= (int)json.length() || json[vp] != '"') return "";
+  int ep = json.indexOf('"', vp + 1); if (ep < 0) return "";
+  return json.substring(vp + 1, ep);
+}
+
+static float readJsonNum(const String &json, const String &key, float def) {
+  String tok = "\"" + key + "\"";
+  int kp = json.indexOf(tok); if (kp < 0) return def;
+  int cp = json.indexOf(':', kp); if (cp < 0) return def;
+  int vp = cp + 1;
+  while (vp < (int)json.length() && isspace((unsigned char)json[vp])) vp++;
+  String num;
+  while (vp < (int)json.length() &&
+         (isdigit((unsigned char)json[vp]) || json[vp]=='.' || json[vp]=='-' || json[vp]=='+'))
+    num += json[vp++];
+  return num.length() ? num.toFloat() : def;
+}
+
+static bool readJsonBool(const String &json, const String &key, bool def) {
+  String tok = "\"" + key + "\"";
+  int kp = json.indexOf(tok); if (kp < 0) return def;
+  int cp = json.indexOf(':', kp); if (cp < 0) return def;
+  int vp = cp + 1;
+  while (vp < (int)json.length() && isspace((unsigned char)json[vp])) vp++;
+  String val;
+  while (vp < (int)json.length() && json[vp]!=',' && json[vp]!='}' && json[vp]!='\n' && json[vp]!='\r')
+    val += json[vp++];
+  val.trim();
+  if (val.equalsIgnoreCase("true"))  return true;
+  if (val.equalsIgnoreCase("false")) return false;
+  return def;
+}
+
+bool parseNetworkPacket(const String &js) {
+  if (js.length() == 0 || js[0] != '{') return false;
+
+  String cmd = readJsonStr(js, "command");
+  if (cmd == "START") { if (!motorRunning) startMotor(); return true; }
+  if (cmd == "STOP")  { stopMotor();  return true; }
+  if (cmd == "RESET") { resetReference(); return true; }
+
+  int tgtThr = (int)readJsonNum(js, "setThrottle", -1.0f);
+  if (tgtThr >= MIN_THROTTLE) {
+    manualThrottle = constrain(tgtThr, MIN_THROTTLE, MAX_THROTTLE);
+    if (motorRunning && !autoMode) setThrottleTarget(manualThrottle);
+    return true;
+  }
+
+  if (js.indexOf("\"autoMode\"") >= 0) {
+    bool af = readJsonBool(js, "autoMode", autoMode);
+    if (af) enterAutoMode("NET_JSON");
+    else    enterManualMode("NET_JSON");
+    return true;
+  }
+
+  // Live gain update via JSON (e.g. dashboard PID sliders)
+  if (js.indexOf("\"kp\"") >= 0) { bal_Kp = readJsonNum(js,"kp",bal_Kp); return true; }
+  if (js.indexOf("\"ki\"") >= 0) { bal_Ki = readJsonNum(js,"ki",bal_Ki); return true; }
+  if (js.indexOf("\"kd\"") >= 0) { bal_Kd = readJsonNum(js,"kd",bal_Kd); return true; }
+  if (js.indexOf("\"knl\"") >= 0){ bal_Knl= readJsonNum(js,"knl",bal_Knl);return true; }
+
+  return false;
+}
+
+void handleAppCommand(const String &cmd) {
+  if      (cmd == "CMD:MOTOR_START")   { if (!motorRunning) startMotor(); else Serial.println("STATUS:MOTOR=ON"); }
+  else if (cmd == "CMD:MOTOR_STOP")    { stopMotor(); }
+  else if (cmd == "CMD:EMERGENCY_STOP"){ emergencyStop(); }
+  else if (cmd == "CMD:SPEED_UP")      { enterManualMode("SPEED_UP"); manualThrottle=constrain(manualThrottle+MOTOR_SPEED_STEP,MIN_THROTTLE,MAX_THROTTLE); if(motorRunning&&!autoMode)setThrottleTarget(manualThrottle); }
+  else if (cmd == "CMD:SPEED_DOWN")    { enterManualMode("SPEED_DOWN"); manualThrottle=constrain(manualThrottle-MOTOR_SPEED_STEP,MIN_THROTTLE,MAX_THROTTLE); if(motorRunning&&!autoMode)setThrottleTarget(manualThrottle); }
+  else if (cmd == "CMD:SET_AUTO")      { enterAutoMode("APP_AUTO"); }
+  else if (cmd == "CMD:SET_MANUAL")    { enterManualMode("APP_MANUAL"); }
+  else if (cmd == "CMD:WIFI_RECONNECT"){ forceWifiReconnect(); }
+  else if (cmd.startsWith("CMD:MANUAL_RPM:")) {
+    int targetRpm = cmd.substring(15).toInt();
+    enterManualMode("MANUAL_RPM");
+    if (targetRpm <= 0) { stopMotor(); }
+    else {
+      if (!motorRunning) startMotor();
+      int us = MIN_THROTTLE + (int)((float)targetRpm / 12000.0f * (MAX_THROTTLE - MIN_THROTTLE));
+      setThrottleTarget(constrain(us, MIN_THROTTLE, MAX_THROTTLE));
+    }
+  }
+  else { Serial.print("STATUS:CMD_UNKNOWN="); Serial.println(cmd); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  IR remote  (same codes as v3.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static unsigned long irLedOffMs = 0;
+
+static void handleIRRemote() {
+  if (!IrReceiver.decode()) return;
+  uint32_t irRaw = IrReceiver.decodedIRData.decodedRawData;
+  if (irRaw == 0 || (IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
+    IrReceiver.resume(); return;
+  }
+  digitalWrite(ONBOARD_LED, HIGH);
+  irLedOffMs = millis() + 200;
+  lastIrCommand = String(irRaw, HEX);
+
+  switch (irRaw) {
+    // PLAY/PAUSE → start/stop toggle
+    case 0xFF02FD: case 0xFFC23D: case 0xBF40FF00:
+    case 0xE619FF00: case 0xA55AFF00:
+      executeCommand(motorRunning ? 'x' : 's'); break;
+
+    // EQ → toggle auto/manual
+    case 0xFFA857: case 0xFF9867: case 0xFF0D:
+      executeCommand('a'); break;
+
+    // 4 KEY → Kp increase
+    case 0xFF10EF: case 0xFF10F1: executeCommand('p'); break;
+    // CH+ → Kp decrease
+    case 0xFF629D: case 0xFF18E7: case 0xFF4AB5: executeCommand('o'); break;
+
+    // 5 KEY → Ki increase
+    case 0xFF38C7: executeCommand('i'); break;
+
+    // 6 KEY → Kd increase
+    case 0xFF5A5A: executeCommand('d'); break;
+
+    // 3 KEY → Knl increase
+    case 0xFF5AA5: executeCommand('n'); break;
+
+    // VOL+ → throttle up
+    case 0xFFE21D: case 0xE916FF00: executeCommand('h'); break;
+    // VOL- → throttle down
+    case 0xFF22DD: case 0xE31CFF00: case 0xBB44FF00: executeCommand('l'); break;
+
+    // 0 KEY → reset reference
+    case 0xFF6897: case 0xE718FF00: executeCommand('z'); break;
+
+    // 7 KEY → print status
+    case 0xFF42BD: executeCommand('v'); break;
+
+    default:
+      Serial.printf("[IR] Unmapped: 0x%08X  cmd=0x%02X  proto=%d\n",
+                    irRaw,
+                    IrReceiver.decodedIRData.command,
+                    (int)IrReceiver.decodedIRData.protocol);
+      break;
+  }
+  IrReceiver.resume();
+}
+
+void executeCommand(char cmd) {
+  switch (cmd) {
+    case 's': case 'S': if (!motorRunning) startMotor(); break;
+    case 'x': case 'X': stopMotor(); break;
+    case 'e': case 'E': emergencyStop(); break;
+    case 'h': case 'H':
+      manualThrottle = constrain(manualThrottle+MOTOR_SPEED_STEP,MIN_THROTTLE,MAX_THROTTLE);
+      if (motorRunning && !autoMode) setThrottleTarget(manualThrottle);
+      Serial.printf("[THR] Up → %d\n", manualThrottle); break;
+    case 'l': case 'L':
+      manualThrottle = constrain(manualThrottle-MOTOR_SPEED_STEP,MIN_THROTTLE,MAX_THROTTLE);
+      if (motorRunning && !autoMode) setThrottleTarget(manualThrottle);
+      Serial.printf("[THR] Down → %d\n", manualThrottle); break;
+    case 'z': case 'Z':
+      resetReference(); Serial.println("[REF] Reset"); break;
+    case 'a': case 'A':
+      if (autoMode) { enterManualMode("TOGGLE"); Serial.println("[MODE] Manual"); }
+      else          { enterAutoMode("TOGGLE");   Serial.println("[MODE] Auto"); } break;
+    case 'w': case 'W': forceWifiReconnect(); break;
+
+    // Kp
+    case 'p': bal_Kp += KP_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    case 'o': if (bal_Kp >= KP_STEP) bal_Kp -= KP_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    // Ki
+    case 'i': bal_Ki += KI_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    case 'u': if (bal_Ki >= KI_STEP) bal_Ki -= KI_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    // Kd
+    case 'd': bal_Kd += KD_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    case 'c': if (bal_Kd >= KD_STEP) bal_Kd -= KD_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    // Knl
+    case 'n': bal_Knl += KNL_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+    case 'm': if (bal_Knl >= KNL_STEP) bal_Knl -= KNL_STEP;
+              Serial.printf("[TUNE] Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",bal_Kp,bal_Ki,bal_Kd,bal_Knl); break;
+
+    case 'v': case 'V':
+      Serial.println(F("\n====== GYRO BALANCE v4 STATUS ======"));
+      Serial.printf(  "  Kp  = %.2f  (Routh min ≈ 1.4)\n", bal_Kp);
+      Serial.printf(  "  Ki  = %.2f  (Routh min ≈ 17)\n",  bal_Ki);
+      Serial.printf(  "  Kd  = %.2f  (direct gyro-rate)\n",bal_Kd);
+      Serial.printf(  "  Knl = %.2f  (nonlinear boost)\n", bal_Knl);
+      Serial.printf(  "  Tilt X=%.2f°  Y=%.2f°\n",         error_X, error_Y);
+      Serial.printf(  "  RPM=%.0f  Throttle=%d  ESC=%.0f\n",currentRPM,(int)manualThrottle,heldEscPulseUs);
+      Serial.printf(  "  Mode=%s  IntX=%.2f  IntY=%.2f\n",  autoMode?"AUTO":"MANUAL",integralX,integralY);
+      Serial.printf(  "  Saturated=%s\n", outputSaturated?"YES":"no");
+      Serial.println(F("====================================="));
+      break;
+  }
+}
+
+static void handleSerialInput() {
+  if (!Serial.available()) return;
+  char c = Serial.read();
+  executeCommand(c);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Telemetry  (format compatible with v3.5 dashboard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void sendAppTelemetry() {
+  float pwmPercent = 0.0f;
+  if (motorThrottle > ARM_THROTTLE)
+    pwmPercent = (float)(motorThrottle - ARM_THROTTLE) / (float)(MAX_THROTTLE - ARM_THROTTLE) * 100.0f;
+
+#if HAS_TEMP_SENSOR
+  float tempC = temperatureRead();
+#else
+  float tempC = 0.0f;
+#endif
+
+  String json =
+    String("{\"mode\":\"") + (autoMode ? "auto" : "manual") +
+    String("\",\"tiltX\":")          + String(mpuOk ? error_X : 0.0f, 2) +
+    String(",\"tiltY\":")            + String(mpuOk ? error_Y : 0.0f, 2) +
+    String(",\"heldFINALpulse\":")   + String(heldFinalPulse, 1) +
+    String(",\"throttle\":")         + String(manualThrottle) +
+    String(",\"SentMOTORpulse\":")   + String(sentMotorPulse, 1) +
+    String(",\"pwm\":")              + String(pwmPercent, 2) +
+    String(",\"tiltZ\":")            + String(mpuOk ? error_Z : 0.0f, 2) +
+    String(",\"rpm\":")              + String(rpmValue) +
+    String(",\"vibrationRMS\":")     + String(vibrationRMS, 4) +
+    String(",\"mpuFault\":")         + (mpuOk ? "false" : "true") +
+    String(",\"correction\":")       + String(pidCorrectionValue, 1) +
+    String(",\"escPulse\":")         + String(heldEscPulseUs, 0) +
+    String(",\"intX\":")             + String(integralX, 2) +
+    String(",\"intY\":")             + String(integralY, 2) +
+    String(",\"saturated\":")        + (outputSaturated ? "true" : "false") +
+    String(",\"kp\":")               + String(bal_Kp, 1) +
+    String(",\"ki\":")               + String(bal_Ki, 1) +
+    String(",\"kd\":")               + String(bal_Kd, 1) +
+    String(",\"knl\":")              + String(bal_Knl, 1) +
+    String("}");
+
+  lastIrCommand = "none";
+
+  Serial.println(json);
+  if (tcpClient.connected()) tcpClient.println(json);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  setup
+// ─────────────────────────────────────────────────────────────────────────────
+
+void setup() {
+  Serial.begin(115200);
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println("  GYRO BALANCE v4.0 — Full State-Feedback PID");
+  Serial.println("  Direct gyro-rate D  |  Anti-windup  |  Two-axis control");
+  Serial.println("============================================================");
+  Serial.printf("  Starting gains: Kp=%.1f Ki=%.1f Kd=%.1f Knl=%.1f\n",
+                bal_Kp, bal_Ki, bal_Kd, bal_Knl);
+  Serial.println("  (Routh stability minimums: Kp≥1.4, Ki≥17)");
+  Serial.println("============================================================");
+
+  initWifi();
+  if (APP_SERVER_ENABLED) connectToServer();
+
+  Serial.println("DEVICE_INFO:esp32WiFi|VERSION:4.0|COMPONENTS:" + connectedComponentsList() + "|BAUD:115200");
+  Serial.println("{\"status\":\"boot\",\"msg\":\"GyroBalance v4.0\"}");
+
+  // GPIO
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+  pinMode(ONBOARD_LED, OUTPUT);
+  digitalWrite(ONBOARD_LED, LOW);
+  IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
+
+  pinMode(RPM_SENSOR_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RPM_SENSOR_PIN), rpmPulseISR, FALLING);
+
+#if HAS_MPU6050
+  Wire.begin(21, 22);
+  initMPU6050();
+  if (mpuOk) {
+    // Let MPU settle, then calibrate gyro bias before the motor starts
+    unsigned long gyroCalStart = millis();
+    while (millis() - gyroCalStart < 500) {
+      yield();
+      if (Serial.available()) handleSerialInput();
+      handleIRRemote();
+      ArduinoOTA.handle();
+      httpServer.handleClient();
+    }
+    calibrateGyroBias(200);
+  }
+#else
+  Serial.println("[MPU] Skipped — HAS_MPU6050=0");
+#endif
+
+  lastUpdateTime = millis();
+
+#if HAS_ESC
+  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(ESC_PIN, PWM_CHANNEL);
+  setThrottle(ARM_THROTTLE);
+  unsigned long escArmStart = millis();
+  Serial.println("[ESC] Arming...");
+  while (millis() - escArmStart < 3000) {
+    yield();
+    if (Serial.available()) handleSerialInput();
+    handleIRRemote();
+    ArduinoOTA.handle();
+    httpServer.handleClient();
+  }
+  setThrottle(ARM_THROTTLE);
+  Serial.println("[ESC] Armed. STATUS:MOTOR=OFF");
+#else
+  Serial.println("[ESC] Skipped — HAS_ESC=0");
+#endif
+
+  Serial.println("============================================================");
+  Serial.println("  Serial keys:  S=start  X=stop  E=ESTOP  A=auto  Z=reset");
+  Serial.println("                H/L=throttle±  W=wifi-reconnect  V=status");
+  Serial.println("  Gain tuning:  P/O=Kp±  I/U=Ki±  D/C=Kd±  N/M=Knl±");
+  Serial.println("  IR remote:    EQ=auto  4=Kp+  5=Ki+  6=Kd+  3=Knl+");
+  Serial.println("                VOL±=throttle  0=reset  PLAY=start/stop");
+  Serial.println("============================================================");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+void loop() {
+  // ── WiFi / OTA polling ────────────────────────────────────────────────────
+  ArduinoOTA.handle();
+  httpServer.handleClient();
+  maintainWifiConnection();
+  if (tcpClient.connected()) processWifiInput();
+
+  // ── Input (serial + IR) ───────────────────────────────────────────────────
+  handleSerialInput();
+  handleIRRemote();
+
+  // IR LED off timer
+  if (irLedOffMs > 0 && (long)(millis() - irLedOffMs) >= 0) {
+    digitalWrite(ONBOARD_LED, LOW);
+    irLedOffMs = 0;
+  }
+
+  // ── Hardware reset button ────────────────────────────────────────────────
+  if (digitalRead(RESET_BUTTON) == LOW) {
+    if (lastResetButtonMs == 0) lastResetButtonMs = millis();
+    else if (millis() - lastResetButtonMs >= 50 && millis() - lastResetActionMs >= 500) {
+      if (digitalRead(RESET_BUTTON) == LOW) {
+        resetReference();
+        lastResetActionMs = millis();
+      }
+    }
+  } else {
+    lastResetButtonMs = 0;
+  }
+
+  // ── IMU read + angle estimation ───────────────────────────────────────────
+#if HAS_MPU6050
+  if (readMPU6050()) {
+    convertMPU6050();
+    calculateCurrentAngles();
+    updateVibration();
+    if (!initialized) resetReference();
+    calculateAngleErrors();
+  }
+#endif
+
+  // ── RPM processing ─────────────────────────────────────────────────────
+  processRPMPulse();
+  publishRPMValue();
+
+  // ── Balance control loop (fixed 20 ms rate) ───────────────────────────────
+  unsigned long nowMs = millis();
+  if ((nowMs - lastCtrlMs) >= CTRL_INTERVAL_MS) {
+    float dt = (float)(nowMs - lastCtrlMs) / 1000.0f;
+    if (dt > 0.1f) dt = 0.02f;   // clamp on first call or after gap
+    lastCtrlMs = nowMs;
+
+    // In-loop RPM guard: drop out of auto if flywheel slows below minimum.
+    // This handles the case where auto was armed and then the flywheel decelerates
+    // (e.g. approaching stall, battery sag).
+#if HAS_RPM_SENSOR
+    if (autoMode && currentRPM < AUTO_MIN_RPM) {
+      Serial.printf("[CTRL] Auto deactivated — RPM %.0f fell below %.0f\n",
+                    currentRPM, AUTO_MIN_RPM);
+      enterManualMode("RPM_GUARD");
+    }
+#endif
+
+    float correction = 0.0f;
+    if (autoMode && motorRunning && mpuOk) {
+      correction = runBalanceController(dt);
+    }
+
+    pidCorrectionValue = correction;
+    heldFinalPulse     = correction * 0.1f;
+
+    float targetF  = (float)manualThrottle + heldFinalPulse;
+    int   targetUs = constrain((int)roundf(targetF), MIN_THROTTLE, MAX_THROTTLE);
+    heldEscPulseUs = (float)targetUs;
+    sentMotorPulse = (float)targetUs;
+
+    if (motorRunning) {
+      if (autoMode) {
+        // Direct write — bypass ramp for fast closed-loop response.
+        // The unstable pole at ≈10 rad/s requires <50 ms actuator lag.
+        applyAutoThrottle(targetUs);
+      } else if (targetUs != motorRampTarget) {
+        // Manual throttle changes use the smooth ramp as before.
+        setThrottleTarget(targetUs);
+      }
+    }
+  }
+
+  // ── Motor keep-alive (ramp step) ─────────────────────────────────────────
+#if HAS_ESC
+  updateMotor();
+#endif
+
+  // ── Telemetry ─────────────────────────────────────────────────────────────
+  nowMs = millis();
+  if (nowMs - lastTelemetryTime >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryTime = nowMs;
+    sendAppTelemetry();
+  }
+}

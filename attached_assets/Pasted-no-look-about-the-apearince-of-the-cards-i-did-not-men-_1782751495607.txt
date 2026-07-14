@@ -1,0 +1,53 @@
+no look, about the apearince of the cards i did not men you decorate them. ts the way the data fits into the card nothing to do with how the data or the cards appear/look. secondly, i cond like how the this left sidebar you have put looks, it looks like its not part of the app. instaead of a long sidebar, better we have floating round buttons of each, o i have a better idea. instead of having them as a sliding window, lets have them like the way the connect buttin in the top bar is made, the exact same way as that where we have a dialog window (like the connect dialog window) that foats while leaving the background blurry. even the buttons we put them in the top bar and must behave just like the tunns 'history', predictions, settings, behave when hovered.
+
+5 minutes ago
+
+Planning chart card data fitting (31 seconds)
+Clear - two separate things to fix:
+
+Chart fitting — the Y-axis / margins / empty space issue, not decoration
+ControlDrawer — kill the right rail, move the controls as buttons into the top bar that open blurred dialogs, styled exactly like the existing History/Predictions/Settings buttons
+Let me read the top bar structure and the existing ControlDrawer so I can plan both fixes at once.
+
+
+3 actions
+Now I have the full picture. Let me read the top bar section and the ConnectDialog to understand the exact button + dialog pattern to replicate.
+
+
+3 actions
+Now let me read the actual top bar rendering in dashboard.tsx to copy the exact button style.
+
+
+2 actions
+Let me read the rest of the top bar to see the exact History/Settings button markup.
+
+
+2 actions
+Let me quickly check the shadcn Dialog component to confirm the overlay structure, then I'll write everything at once.
+
+
+2 actions
+Now I have everything. I'll do all three changes in parallel:
+
+Add backdrop-blur-sm to the Dialog overlay
+Write ControlDialogs.tsx — 3 floating dialogs using the exact ConnectDialog pattern
+Update dashboard.tsx — remove the rail, add 3 top-bar buttons, wire the dialogs
+
+2 actions
+Now write ControlDialogs.tsx and update dashboard.tsx in parallel.
+
+
+2 actions
+Now update dashboard.tsx — swap out the import, add state + buttons + dialogs.
+
+
+2 actions
+Continuing — add the dialog state variables and the three top-bar buttons, then remove the old rail.
+
+
+2 actions
+Now add the three top-bar buttons (after Settings, same expanding style) and remove the old rail from the JSX.
+
+
+2 actions
+Now replace the old <ControlDrawer /> in the JSX with the three dialogs:

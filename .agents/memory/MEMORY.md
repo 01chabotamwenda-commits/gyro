@@ -1,0 +1,11 @@
+- [Gyro clone setup](gyro-clone-setup.md) — cloned from GitHub; artifact registration workaround needed for pre-existing directories.
+- [IR remote dialog patterns](ir-remote-dialog-patterns.md) — Bug-1 fix (consume prevIrTs on open) and Bug-2 rule (single state owner for toggle commands) for all IR-driven dialogs.
+- [Gyro bottom nav and command architecture](gyro-bottom-nav.md) — command-gate, throttle-bus, BottomNavBar auto-hide, q/Q shortcut, full-screen layout decisions.
+- [Gyro tilt-PID architecture](gyro-tilt-pid.md) — auto mode stabilizes tilt, not RPM; RPM sensor too slow (250ms) to be a fast-loop feedback signal.
+- [PID toggle architecture](pid-toggle-architecture.md) — dashboard button, IR "200+", and firmware all converge on CMD:SET_AUTO/CMD:SET_MANUAL as the single source of truth.
+- [Firmware organization plan](firmware-organization.md) — move v3.0 from attached_assets/ into firmware/ as a PlatformIO ESP32 project; await user go-ahead.
+- [Firmware live settings](firmware-live-settings.md) — pattern for exposing firmware consts as runtime settings; watch for off-by-one substring offsets in CMD:SET_* parsers.
+- [Alert & notification system](alert-system.md) — 5-level alert system; behavior stored in localStorage; dual ingestion (WS + polled); bounded seenIds; scoped acknowledge.
+- [Gyro dashboard fixes plan status](gyro-dashboard-fixes-plan.md) — 11/12 plan items done; new telemetry fields need 4-layer threading (firmware→2 ingest routes→2 DB stores→openapi+codegen).
+- [LED feedback diagnostic blindspot](esc-led-diagnostic-blindspot.md) — onboard LED blinks on every command receipt regardless of outcome; check motorPulseUs telemetry, not the LED, to isolate software vs. ESC/motor hardware faults.
+- [Thesis spec corrections](thesis-spec-corrections.md) — all hardware values updated to 950 KV x2212, 0.5 kg flywheel, 3000 RPM, 4.36 V eff., 12 V supply; 24-hour requirement removed; run with `uv run python thesis/convert_to_pdf.py`.

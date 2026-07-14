@@ -1,0 +1,154 @@
+Perfect! Replit has identified the exact issues. Here's what you should tell them to implement for **Option 1 (Hardware Handshake)**:
+
+---
+
+## 📋 Implementation Specs for Replit
+
+### **What to build:**
+
+**1. ESP32 Sends Capability Message on Connect**
+```
+When ESP32 connects, it sends ONCE:
+DEVICE_INFO:esp32LOGIC|VERSION:1.0|COMPONENTS:MPU6050,ESC,TEMP_SENSOR|BAUD:115200
+HEALTH:MPU6050=OK|ESC=OK|TEMP=FAIL
+
+Then normal data stream:
+X:0.5 Y:1.2 Z:-0.3 RPM:8000 TEMP:42.5
+```
+
+**2. Backend (Node.js/Python) Changes:**
+
+**a) Parse Device Info Message**
+- Listen for `DEVICE_INFO:` line on serial
+- Extract: `components[]`, `version`, `health_status{}`
+- Store in a **new REST endpoint**: `/api/device/capabilities`
+
+**b) Flush stale simulator data**
+```
+When DEVICE_INFO received:
+- Clear memStore completely
+- Clear all historical data buffers
+- Set isHardwareConnected = true
+- Set isSimulatorMode = false
+```
+
+**c) Create device capability endpoint**
+```
+GET /api/device/capabilities
+Response:
+{
+  "connected": true,
+  "components": ["MPU6050", "ESC", "TEMP_SENSOR"],
+  "health": {
+    "MPU6050": "OK",
+    "ESC": "OK",
+    "TEMP_SENSOR": "FAIL"
+  },
+  "version": "1.0"
+}
+```
+
+**3. Frontend (React) Changes:**
+
+**a) Fetch capabilities on app load**
+```javascript
+const { data: capabilities } = useQuery(
+  'device-capabilities',
+  () => fetch('/api/device/capabilities').then(r => r.json())
+);
+```
+
+**b) Clear React Query cache when hardware connects**
+```javascript
+useEffect(() => {
+  if (capabilities?.connected) {
+    queryClient.invalidateQueries(); // Clear ALL cache
+    queryClient.removeQueries(); // Remove old simulator data
+  }
+}, [capabilities?.connected]);
+```
+
+**c) Conditionally render panels based on capabilities**
+```javascript
+return (
+  <>
+    {capabilities?.components.includes('MPU6050') && 
+      <MPU6050Panel health={capabilities.health.MPU6050} />
+    }
+    {capabilities?.components.includes('ESC') && 
+      <ESCPanel health={capabilities.health.ESC} />
+    }
+    {capabilities?.components.includes('TEMP_SENSOR') && 
+      capabilities.health.TEMP_SENSOR === 'OK' ? 
+        <TempPanel /> : <FailedSensorWarning />
+    }
+  </>
+);
+```
+
+**d) Add WebSocket listener for real-time data**
+```javascript
+useEffect(() => {
+  if (!capabilities?.connected) return; // Only if hardware connected
+  
+  socket.on('sensor:data', (data) => {
+    updateCharts(data); // Live updates
+  });
+}, [capabilities?.connected]);
+```
+
+---
+
+## 🎯 Summary for Replit
+
+Tell them:
+
+> **We're implementing hardware auto-detection (Option 1).**
+> 
+> **Backend needs to:**
+> 1. Parse `DEVICE_INFO:` message from ESP32 on connect
+> 2. Store component list & health status
+> 3. **CLEAR all simulator data** when hardware connects
+> 4. Provide `/api/device/capabilities` endpoint
+> 
+> **Frontend needs to:**
+> 1. Fetch capabilities on app start
+> 2. **Clear React Query cache** when hardware connects
+> 3. Only show panels for **actually connected** components
+> 4. Show warning badges for failed sensors (red/disabled)
+> 5. Listen to WebSocket for live data (not REST polling)
+>
+> **This fixes the three issues:**
+> - ✅ No more stale sim data (cleared on connect)
+> - ✅ React cache invalidated (old data removed)
+> - ✅ App knows which sensors exist (capability awareness)
+
+---
+
+## 🔧 If you want to code it yourself:
+
+**Backend pseudocode:**
+```python
+serial_data = ""
+device_capabilities = None
+
+while reading_serial:
+    if "DEVICE_INFO:" in line:
+        device_capabilities = parse_device_info(line)
+        clear_all_simulator_data()  # IMPORTANT
+        broadcast_to_clients("HARDWARE_CONNECTED")
+    
+    elif "HEALTH:" in line:
+        health = parse_health(line)
+        device_capabilities['health'] = health
+    
+    elif "X:" in line:
+        data = parse_sensor_data(line)
+        emit_websocket(data)  # Not REST
+
+@app.get("/api/device/capabilities")
+def get_capabilities():
+    return device_capabilities or {"connected": False}
+```
+
+**Which route do you want to take: have Replit code it, or want to code it yourself?**

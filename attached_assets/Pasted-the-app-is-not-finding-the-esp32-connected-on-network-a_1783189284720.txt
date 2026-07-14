@@ -1,0 +1,60 @@
+the app is not finding the esp32 connected on network as same as my pc. 'BEng Tool 2' with password "123456789".
+
+9 minutes ago
+
+Planning settings save failure resolution (13 seconds)
+Two separate issues here. Let me look at the WiFi scan/discovery code and the server connectivity to understand both.
+
+
+3 actions
+Let me look at the discovery code and the firmware's hardcoded server IP — those are the two key pieces.
+
+
+3 actions
+Now I understand both problems clearly:
+
+Desktop App Server is stopped — the Electron app's local server isn't running, so settings save fails
+Firmware SERVER_IP is hardcoded to 10.124.18.126 — if the PC's IP on "BEng Tool 2" is different, the ESP32 can't connect back
+Let me look at the Electron startup code and the WiFi connection section of the firmware.
+
+
+6 actions
+Let me find the ConnectDialog to understand the "Desktop App Server" indicator, and check how the local server status is tracked.
+
+
+3 actions
+Let me read the ConnectDialog and DesktopServerSection to see what's there.
+
+
+3 actions
+Let me check what the ESP32's HTTP root returns (to see if the discovery banner check will match) and look at the WifiSection more carefully.
+
+
+3 actions
+Let me check the memory about the Electron offline persistence fix, and look at the API server startup to understand why the local server might be failing.
+
+
+3 actions
+Now I have the full picture. There are two root causes:
+
+Desktop App Server stopped → the Electron app's local API server isn't running, so every API call (scan, settings save) fails immediately
+Firmware SERVER_IP is hardcoded to 10.124.18.126 — if the PC's IP on "BEng Tool 2" changed, the ESP32 can't connect back
+I'll fix the dashboard to:
+
+Auto-expand the Desktop App Server section when it's stopped and add a "Start" button
+Distinguish "server not reachable" from "scanned but nothing found"
+Show the PC's local IP so the user knows what SERVER_IP to set in the firmware
+Add a manual "Connect by IP" fallback
+
+2 actions
+Now I'll make the targeted improvements to the ConnectDialog. Let me do all the edits in parallel.
+
+
+4 actions
+Now update the notfound and servererror UI states in WifiSection, and the DesktopServerSection.
+
+
+Edited ConnectDialog.tsx
+You've reached your daily free quota limit. It will reset at 12:00 AM UTC.
+
+

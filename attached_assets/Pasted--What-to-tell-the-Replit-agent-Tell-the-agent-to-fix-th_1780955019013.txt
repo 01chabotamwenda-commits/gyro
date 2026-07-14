@@ -1,0 +1,62 @@
+
+What to tell the Replit agent
+Tell the agent to fix the app code, not the local .py patch, because the desktop app is the real product.
+
+serial-manager.js
+
+Keep _apiBase = "http://127.0.0.1:8050"
+Increase the POST timeout from 3000ms to something like 10000ms
+Add retry logic for transient failures
+Log failed POSTs clearly so it is visible in the Electron console
+main.js
+
+Confirm the API server is started before the serial bridge begins posting
+Confirm the configured serverPort is 8050 and is passed consistently to serial-manager
+ingest.ts
+
+Ensure POST /api/readings/ingest returns quickly and does not block on slow DB writes
+Make sure the API server is really listening on port 8050
+Documentation / tooling
+
+If the Python bridge is included in the repo, make it an optional debug helper only
+Make sure docs say 8050 not 8051
+Is the .py file required for the app to work?
+No.
+
+The app already has its own serial bridge in serial-manager.js
+The Electron app should work without the Python script
+The Python file is a useful diagnostic helper to verify ESP serial output independently
+It should be an optional tool, not a required runtime dependency
+So tell the agent:
+
+“Don’t treat python esp32-bridge.py as part of the shipped app. It is a separate debug bridge.”
+“Fix the Electron/Node bridge and backend integration so the app works by itself.”
+Can we make the .py file part of the app?
+Yes, but only as an optional utility.
+
+You could include it in the repo under a tools/ or scripts/ folder
+It can be run manually for diagnostics
+But if you want the app to be self-contained, the real fix is to improve the Electron bridge and API server
+If you want a tighter integration, the better architecture is:
+
+Electron starts the API server
+Electron serial manager reads ESP32 and forwards it directly to API
+No separate Python process is required
+Do you need to upload new ESP firmware?
+Probably not for this POST problem.
+
+The bridge log already shows JSON readings arriving from the ESP32
+That means the firmware is sending data correctly
+The failure is in the backend communication path, not the ESP serial output
+So:
+
+If the firmware you uploaded yesterday already sends JSON telemetry, you do not need to upload it again just to solve this POST timeout
+If you made firmware changes after yesterday that add support for DEVICE_INFO, HEALTH, or new field names, then yes, upload the newer firmware
+But the current issue is backend/app-side: POST /api/readings/ingest timing out
+Summary to send to the agent
+Fix serial-manager.js to use port 8050, longer request timeout, and retries
+Ensure the API server on 8050 is started and reachable before serial posts
+Keep the Python bridge as an optional diagnostic helper, not required app logic
+Do not assume the ESP firmware is bad just because POSTs fail; the ESP is already sending data
+If you want, I can also write a small patch summary for the agent with exact file changes.
+

@@ -1,0 +1,36 @@
+PS C:\Users\mweny\Desktop\PROJECT_2\codeGen\CODE> & 'C:\Users\mweny\Desktop\PROJECT_2\codeGen\CODE\.venv\Scripts\python.exe' 'C:\Users\mweny\Desktop\PROJECT_2\codeGen\CODE\python esp32-bridge.py' --port COM6 --baud 115200
+[23:30:10.418] ============================================================
+[23:30:10.418] ESP32 Serial Bridge — Python debug tool
+[23:30:10.426] ============================================================
+[23:30:10.426] Port:     COM6
+[23:30:10.427] Baud:     115200
+[23:30:10.427] API base: http://127.0.0.1:8051
+[23:30:10.427] ============================================================
+[23:30:10.428] Opening COM6 @ 115200 baud...
+[23:30:10.430] Port opened: COM6
+[23:30:10.968] API server acknowledged connection: {'ok':True}
+[23:30:10.968] Waiting for ESP32 data (press Ctrl+C to stop)...
+[23:30:10.969] 
+[23:30:13.999] POST http://127.0.0.1:8051/api/readings/ingest → FAILED: HTTPConnectionPool(host='127.0.0.1', port=8051): Read timed out. (read timeout=3)
+[23:30:16.615] [2] → {'rpm': 0.0, 'tiltX': 71.9, 'tiltY':-4.4, 'rotationZ': -1.51, 'temperature': 25.0, 'motorPwm': 0.0, 'vibration': 0.0}
+[23:30:16.616] Status: 2 lines sent, 1 errors
+[23:30:19.622] [3] → {'rpm': 0.0, 'tiltX': 71.9, 'tiltY':-4.5, 'rotationZ': -1.89, 'temperature': 25.0, 'motorPwm': 0.0, 'vibration': 0.0}
+[23:30:22.057] [4] → {'rpm': 0.0, 'tiltX': 71.9, 'tiltY':-4.4, 'rotationZ': -1.81, 'temperature': 25.0, 'motorPwm': 0.0, 'vibration': 0.0}
+[23:30:22.057] Status: 4 lines sent, 1 errors
+[23:30:24.894] [5] → {'rpm': 0.0, 'tiltX': 71.9, 'tiltY':-4.4, 'rotationZ': -1.91, 'temperature': 25.0, 'motorPwm': 0.0, 'vibration': 0.0}
+[23:30:27.452] ... (suppressing further per-line logs, Ctrl+C to stop)
+[23:30:27.460] Status: 6 lines sent, 1 errors
+[23:30:32.807] Status: 8 lines sent, 1 errors
+[23:30:37.912] Status: 10 lines sent, 1 errors
+[23:30:40.988] POST http://127.0.0.1:8051/api/readings/ingest → FAILED: HTTPConnectionPool(host='127.0.0.1', port=8051): Read timed out. (read timeout=3)
+[23:30:43.812] Status: 12 lines sent, 2 errors
+[23:30:49.344] Status: 14 lines sent, 2 errors
+[23:30:52.355] POST http://127.0.0.1:8051/api/readings/ingest → FAILED: HTTPConnectionPool(host='127.0.0.1', port=8051): Read timed out. (read timeout=3)
+[23:30:54.849] Status: 16 lines sent, 3 errors
+[23:31:00.242] Status: 18 lines sent, 3 errors
+[23:31:05.739] Status: 20 lines sent, 3 errors
+[23:31:08.753] POST http://127.0.0.1:8051/api/readings/ingest → FAILED: HTTPConnectionPool(host='127.0.0.1', port=8051): Read timed out. (read timeout=3)
+[23:31:11.104] Status: 22 lines sent, 4 errors
+[23:31:16.540] POST http://127.0.0.1:8051/api/readings/ingest → FAILED: HTTPConnectionPool(host='127.0.0.1', port=8051): Read timed out. (read timeout=3)
+[23:31:16.541] Status: 24 lines sent, 5 errors
+[23:31:19.567] POST http://127.0.0.1:8051/api/readi

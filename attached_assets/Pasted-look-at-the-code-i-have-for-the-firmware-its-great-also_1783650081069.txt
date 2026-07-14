@@ -1,0 +1,279 @@
+look at the code i have for the firmware, its great. also look at the app, its good, i still feel we are missing some important app fucntionality and/or buttons such as the reset angles, increase/reduce speed, etc. lets discuss this before we can et into editting anything
+
+43 minutes ago
+
+20 actions
+I looked through the dashboard and firmware. You're right — there are a couple of "orphaned" features: built but not actually exposed as buttons.
+
+What already exists but isn't wired to a visible button:
+
+Reset/zero tilt angles — handleZeroTilt() in dashboard.tsx calls a working resetAngleRef API (backend endpoint + firmware support), and a Crosshair icon is even imported for it — but no button ever calls it. It's dead code right now.
+Manual RPM/speed control (RemoteDialog) — a whole dialog with auto/manual mode, RPM stepping, and "Apply" exists in ControlDialogs.tsx, but it's never imported or rendered in dashboard.tsx. There's no button to open it.
+What you do have exposed: idle-pulse "Speed" dialog (ESC pulse width in µs, not RPM), PID tuning, safety thresholds, on/off + emergency shutdown, session start/stop.
+Gaps worth discussing:
+
+Should "Zero tilt angles" become a real header/toolbar button (like Thresholds/PID Tune)? Straightforward since the plumbing works.
+Should the RPM-based RemoteDialog be wired in, or is the µs-pulse SpeedDialog the intended "speed control" and RemoteDialog is legacy/superseded? They overlap in purpose (pulse vs RPM), so I don't want to expose both without knowing which is canonical.
+Any other controls you had in mind — e.g. a quick "reset session," a PWM/RPM increment/decrement button pair for live jogging while a session is running, or exposing the mode/PID setpoint override more directly?
+How do you want to handle the two overlapping speed controls?
+Speed control approach
+Keep only the µs pulse dialog (drop RemoteDialog)
+Add a visible "Reset/Zero Tilt Angles" button to the toolbar?
+No
+Additional comments
+i think lets add a bottom bar (more like a naviagtion bar for mobile app in appearance)
+Any other missing functionality you want added?
+Increase/decrease speed buttons (jog RPM up/down while running), Quick reset/restart session button
+Additional comments
+i dont undertand this: Quick access to PID setpoint override (outside full tuning dialog)
+
+Worked for 44 seconds
+
+4 actions
+
+Worked for 20 seconds
+dont implement these for now, we are still talking
+
+38 minutes ago
+Got it — I'll hold off on any implementation. Just to make sure I have the plan straight for when we're ready:
+
+Speed control: keep the µs pulse dialog only; remove the unused RemoteDialog dead code.
+New bottom nav bar (mobile-app style): houses quick-action buttons — Zero Tilt (angle reset), Jog Speed ±, Reset/Restart Session.
+Skipping: the PID setpoint quick-access shortcut (that's just a hotkey to the setpoint field inside the tuning dialog you already have — not worth adding separately).
+Let me know when you want to dig into details (e.g. what "jog speed" should increment — µs pulse or RPM — and what "reset session" should actually do: clear+restart vs. stop-then-new) or when you're ready for me to build it.
+
+
+Worked for 6 seconds
+am also thining while in te app one can just press the kayboard keys in the very sae way they would if the were using platform io interface without requiring to go to app terimnal input area
+
+36 minutes ago
+
+3 actions
+Good catch — there's actually a split-brain issue here already. Two separate keyboard systems exist:
+
+SystemTerminal.tsx defines single-letter commands (s start, x stop, h/l throttle up/down, z reset angles, w wifi reconnect) — but these only fire if you click into the terminal's input box, type the letter, and press Enter. Not a live keypress like PlatformIO's Serial Monitor (where letters send instantly, no Enter needed, as long as the monitor window has focus).
+dashboard.tsx already has a separate global keydown listener (works anywhere in the app, no need to click into anything) — but it only wires up two keys: Escape (e-stop) and a (PID toggle). The other letters (s, x, h, l, z, w) aren't hooked up there at all.
+So what you're picturing — press s/x/h/l/z/w anywhere in the app, instantly, PlatformIO-style — means extending the existing global listener in dashboard.tsx to cover the rest of the letters, rather than building something new. Two things worth deciding before I touch anything:
+
+Where should feedback appear? PlatformIO's monitor shows the echoed keypress in the terminal itself. Should pressing h while, say, the Settings page or a dialog is open still fire the command and log it to the terminal (which lives on the dashboard), or should global shortcuts only be "live" while you're on the main dashboard view?
+Guard rails: s (start motor) and h/l (throttle ±50µs) bypass session/hardware checks in the terminal's description ("keyboard override"). Do you want that override behavior to carry over to instant global keys too, or should the global versions respect the same session/hardware guards as the dashboard buttons (safer, but less "raw serial monitor" in feel)?
+
+Worked for 23 seconds
+but it must be taken as if they went to the terminal input area
+
+35 minutes ago
+Routing keypresses to command execution
+
+Routing keypresses to command execution
+That clarifies it — a global keypress should route through the exact same code path as typing into the terminal (handleLocalCommand → handleSend), so it gets logged in the terminal feed, follows the same COMMANDS map, and respects whatever guards/overrides the terminal version already has. No parallel logic, no separate rules — it's literally "simulate: focus terminal, type key, press Enter" from anywhere in the app.
+
+That means the terminal's input-handling logic needs to move to somewhere globally reachable (or be exposed via a ref/callback) so the global keydown listener in dashboard.tsx can invoke it directly, rather than duplicating the command map.
+
+That's a clean, unambiguous approach — happy to implement whenever you're ready to stop discussing and start building. Anything else you want to cover first (e.g. the bottom nav bar layout, or what "jog speed" should increment)?
+
+
+Worked for 13 seconds
+the jog speed is same as pressng h or l on the keyboard
+
+32 minutes ago
+Good — that simplifies things. So the full plan now, all consistent with the terminal's existing command path:
+
+Jog speed buttons (in the new bottom nav bar) = same as pressing h/l: throttle ±50µs, routed through the same command path as the terminal.
+Zero tilt (bottom nav bar) = same as pressing z.
+Reset/restart session = new button, not yet mapped to an existing terminal shortcut — still need to define what it does.
+Global keypress for s/x/h/l/z/w (and existing a/Escape) = behaves exactly as if typed into the terminal input and hit Enter, from anywhere in the app.
+Speed control: drop the unused RemoteDialog; keep the µs pulse dialog only.
+
+clarify this please: Speed control: drop the unused RemoteDialog; keep the µs pulse dialog only.
+
+31 minutes ago
+Clarifying dialog differences
+
+Clarifying dialog differences
+To clarify — there are currently two different, overlapping "set the motor speed" screens in the code, but only one of them is actually visible in the app:
+
+SpeedDialog (the one you've actually seen/used) — sets the ESC's idle pulse width directly in microseconds (1200–1800 µs), via the "Set Idle Speed" popup. This one is wired up and reachable from the remote's CH button.
+
+RemoteDialog — a second, separate "Remote Control" popup that sets a target in RPM instead, with auto/manual mode switching and +/- stepping. It's fully coded but never opened anywhere — no button, no menu item, nothing links to it. It's leftover/unused code.
+
+Since you picked "keep only the µs pulse dialog" earlier, that means: leave SpeedDialog as-is (it stays your one speed-setting screen), and delete the RemoteDialog component entirely since nothing uses it and it would just be dead code sitting in the file for no reason.
+
+
+Worked for 8 seconds
+Something else (e.g. clear the charts/history without touching hardware)? - more like reseting the session thats already started.
+
+dont do this change: Speed control: drop the unused RemoteDialog; keep the µs pulse dialog only.
+
+29 minutes ago
+Clearing session data
+
+Clearing session data
+Understood — no changes to RemoteDialog/SpeedDialog; leaving speed control as-is.
+
+For "reset session" — a few clarifying details, since "reset without touching hardware" could mean different things:
+
+Does the elapsed timer restart from 0:00, while the motor keeps running exactly as it was (no on/off change)?
+Do the charts/history just clear their display (visual reset), or should the underlying stored readings for that session be discarded from the DB too?
+Is this still the same session record (same ID, same target RPM/duration settings) just with a fresh start time and cleared data — or does it end the current session and immediately create a brand new one?
+
+Worked for 10 seconds
+Does the elapsed timer restart from 0:00, while the motor keeps running exactly as it was (no on/off change)? - YES Do the charts/history just clear their display (visual reset), or should the underlying stored readings for that session be discarded from the DB too? - YES Is this still the same session record (same ID, same target RPM/duration settings) just with a fresh start time and cleared data , CORRECT — or does it end the current session and immediately create a brand new one? - NO
+
+27 minutes ago
+Summarizing and confirming plan
+
+Summarizing and confirming plan
+Got the full picture now. Here's the consolidated plan, resetting session = same session ID/settings, fresh start time, elapsed timer to 0, motor untouched, and both the DB readings for that session and the on-screen charts cleared:
+
+Summary of everything discussed:
+
+Bottom nav bar (mobile-app style) with:
+Zero Tilt (= same as pressing z)
+Jog Speed +/− (= same as pressing h / l)
+Reset Session (new: same session ID/target settings, elapsed timer → 0, motor state untouched, stored readings for that session deleted from DB, charts cleared)
+Global keyboard shortcuts — s, x, h, l, z, w (plus existing a/Escape) work from anywhere in the app, routed through the exact same code path as typing into the terminal input and pressing Enter (same logging, same guards).
+Speed control dialogs — no changes; SpeedDialog (µs pulse) stays, RemoteDialog stays as unused dead code (left alone per your last message).
+Ready for me to start building this, or is there more you want to cover first?
+
+
+Worked for 9 seconds
+build
+
+27 minutes ago
+
+17 actions
+Now adding the /session/reset endpoint to the spec.
+
+
+8 actions
+Codegen succeeded. Continuing with the frontend now.
+
+
+60 actions
+Bottom nav bar renders correctly and the earlier HMR errors are gone. Running the code review now.
+
+
+Subagent: Review a new "quick actions" feature added to the Gyro Monitor dashboard (artifacts/gyro-dashboard + artifacts/api-server): 1. New POST /api/session/reset endpoint (artifacts/api-server/src/routes/session.ts) — resets the current session in place: keeps same id/targets, sets startedAt=now/stoppedAt=null, deletes that session's readings (DB or SQLite mem-store), broadcasts a 'session_reset' WS event, motor state untouched. 2. mem-store.ts: added readings.clearBySession(sessionId). 3. openapi.yaml: added /session/reset (operationId resetSession), regenerated codegen (lib/api-client-react, lib/api-zod). 4. New src/lib/terminal-bus.ts — a small pub/sub singleton so any component can call sendTerminalCommand(text) and have it run through the exact same code path as typing into the terminal input (SystemTerminal.tsx) and pressing Enter. 5. SystemTerminal.tsx refactored: handleSend's logic extracted into submitCommand(text), registered with terminal-bus on mount via useEffect. 6. dashboard.tsx: global keydown handler extended to route s/x/h/l/z/w through sendTerminalCommand when focus isn't in an input; also added handleSessionReset (WS callback) and handleResetSession (mutation via useResetSession) wired to a new BottomNavBar component (Zero Tilt / Speed - / Speed + / Reset Session). 7. use-websocket.ts: added 'session_reset' WS message type + onSessionReset callback param. 8. New src/components/BottomNavBar.tsx — mobile-style bottom tab bar. Please check: correctness of the reset-session logic (DB vs mem-store paths, error handling, race with an in-flight motor command), whether the terminal-bus singleton pattern has any stale-closure or unmount/remount issues, whether the global keydown shortcut extension could conflict with existing shortcuts or input fields, and any other bugs, DRY-violations, or missed edge cases. Report concrete file/line findings.
+Task
+Review a new "quick actions" feature added to the Gyro Monitor dashboard (artifacts/gyro-dashboard + artifacts/api-server):
+
+1. New POST /api/session/reset endpoint (artifacts/api-server/src/routes/session.ts) — resets the current session in place: keeps same id/targets, sets startedAt=now/stoppedAt=null, deletes that session's readings (DB or SQLite mem-store), broadcasts a 'session_reset' WS event, motor state untouched.
+2. mem-store.ts: added readings.clearBySession(sessionId).
+3. openapi.yaml: added /session/reset (operationId resetSession), regenerated codegen (lib/api-client-react, lib/api-zod).
+4. New src/lib/terminal-bus.ts — a small pub/sub singleton so any component can call sendTerminalCommand(text) and have it run through the exact same code path as typing into the terminal input (SystemTerminal.tsx) and pressing Enter.
+5. SystemTerminal.tsx refactored: handleSend's logic extracted into submitCommand(text), registered with terminal-bus on mount via useEffect.
+6. dashboard.tsx: global keydown handler extended to route s/x/h/l/z/w through sendTerminalCommand when focus isn't in an input; also added handleSessionReset (WS callback) and handleResetSession (mutation via useResetSession) wired to a new BottomNavBar component (Zero Tilt / Speed - / Speed + / Reset Session).
+7. use-websocket.ts: added 'session_reset' WS message type + onSessionReset callback param.
+8. New src/components/BottomNavBar.tsx — mobile-style bottom tab bar.
+
+Please check: correctness of the reset-session logic (DB vs mem-store paths, error handling, race with an in-flight motor command), whether the terminal-bus singleton pattern has any stale-closure or unmount/remount issues, whether the global keydown shortcut extension could conflict with existing shortcuts or input fields, and any other bugs, DRY-violations, or missed edge cases. Report concrete file/line findings.
+Show less
+
+6 actions
+Working
+Result
+Fail — the quick-actions feature is close, but the reset-session path has correctness gaps that can produce false-success resets and wrong-session behavior.
+
+Critical findings:
+
+Reset endpoint does not enforce an active/running session (artifacts/api-server/src/routes/session.ts:260-262, 268-276). It resets the latest session regardless of status. If the latest session is completed/error, this endpoint still rewrites startedAt/stoppedAt and returns success, which conflicts with “reset current session” semantics and can leave a non-running session with a fresh start timestamp.
+DB fallback path can silently report success without actually resetting DB data (session.ts:271-283). When db exists and reset fails, code falls back to memStore and still returns 200 + WS session_reset. In DB-backed deployments, mem-store may not contain the authoritative session/readings, so clients think reset succeeded while persistent rows remain unchanged.
+Reset operation is non-atomic in DB mode (session.ts:272-277). Readings delete and session update run as separate statements without a transaction. A mid-operation failure can partially apply reset (e.g., readings deleted but session not updated), returning 500 after side effects.
+Feature-specific checks requested:
+
+Race with in-flight motor command: no direct motor mutation in reset path (good), but no concurrency guard with session stop/close paths; concurrent updates can still produce inconsistent session timestamps/status.
+terminal-bus stale closure/unmount: generally safe in current usage. registerTerminalHandler cleanup prevents dangling handler (terminal-bus.ts:17-21, SystemTerminal.tsx:320-323).
+Global keydown conflicts: new s/x/h/l/z/w shortcuts correctly skip focused inputs/contenteditable (dashboard.tsx:466-470, 509-513). No severe shortcut conflict found.
+Security: none observed (no serious auth/injection/secret exposure issues introduced in these changes).
+
+Next actions:
+
+In /session/reset, require latest session status to be active (running/warning) and return 404/409 otherwise.
+In DB mode, remove mem-store “success” fallback for reset or gate it behind an explicit degraded-mode decision; avoid returning success unless the authoritative store is updated.
+Wrap DB delete+update in a single transaction and fail fast on partial execution; only broadcast session_reset after commit.
+Fixing the issues the review flagged.
+
+
+18 actions
+Now that the schema is pushed, retesting the full reset flow.
+
+
+Fetched a URL
+All working correctly: reset succeeds (200) while running, is safely re-callable, and correctly rejects (409) once the session is stopped. Let's do a final visual check and quick summary.
+
+
+Took a screenshot
+Everything's working and verified end to end — the terminal log shows the full sequence (session started → reset → reset again → stopped), confirming the same events are logged whether triggered from the terminal, keyboard, or bottom bar.
+
+Summary of what's live now:
+
+Bottom nav bar: Zero Tilt, Speed −, Speed +, Reset Session — all visible at the bottom of the dashboard.
+Global keyboard shortcuts: s/x/h/l/z/w now work from anywhere in the app (not just inside the terminal box), routed through the exact same code path as typing into the terminal.
+Reset Session: keeps the same session, restarts the elapsed timer, clears stored readings/charts, leaves the motor alone — and correctly refuses to reset a session that isn't running.
+Code review caught and I fixed three real bugs in the reset endpoint (resetting non-running sessions, false-success fallback to the wrong data store, non-atomic writes) before shipping.
+
+Checkpoint made
+19 minutes ago
+
+Worked for 8 minutes
+to maintain a clean minimalist view, i want the bottom buttons to be more like autohide (but add a pull up button, jut a small one or may be pulled up by hovering at the botto - just like taskbar icons beahave). here is the flow, if i open the app and i have not stared the session i am not allowed to use some cmmands untill the session starts so al the commands are anot allowed to use (that ALL the commands from the keyboard, remote, or app except the start session command (CH+, and 'q' or 'Q' on keyboard [NEW]) and 'esc' and stop motor 'x' (despite having the start motor command diasabled)), the bottom buttons must be hidden. We unhide the bottom buttons after session stsrts but again may be hiden if i use the keybaord keys in the app for more than once (it indicates that the user knows that he can use the kebaod as a faster way) after i click on the speed up or speed up, i want to see the new throttle i have set rigth in the interface buttons. Also rename them to be 'SPEED UP' from 'SPEED - ' and SPEED DOWN from speed + Add some coloring to the bottom buttons, it makes sense giving visua feedback also redesign the bottom ribbon havng the buttons, i want it to look moden and suit the app like its part because it is pat of the app
+
+16 minutes ago
+
+42 actions
+Now wiring the new BottomNavBar props into dashboard.tsx.
+
+
+10 actions
+The bottom bar renders correctly with colored buttons and live throttle readouts (1100 µs) once a session starts. Now checking browser console for issues and cleaning up the test session.
+
+
+2 actions
+Clean, no errors. Running the code review before wrapping up.
+
+
+Subagent: Review UX/behavior changes to the Gyro Monitor dashboard bottom quick-actions bar and command gating (artifacts/gyro-dashboard): 1. New src/lib/command-gate.ts — module-level mutable "sessionActive" flag + isCommandAllowed(cmdKey, rawText). Before a session is active, only 'x'/'X'/CMD:MOTOR_STOP/CMD:EMERGENCY_STOP are allowed; everything else is rejected. 2. SystemTerminal.tsx submitCommand() now calls isCommandAllowed before sending any command (single-char shortcuts or CMD: strings), rejecting with a "blocked — start a session first" terminal line otherwise. This is the single enforcement point for the terminal input, global keyboard shortcuts (routed via terminal-bus), and bottom-nav buttons (also routed via terminal-bus). 3. dashboard.tsx: added a useEffect syncing command-gate's sessionActive with the real session state; added new 'q'/'Q' global keyboard shortcut to start a session (mirrors the existing CH+ IR handler in SessionControl.tsx, duplicated fetch logic); 'a' (PID toggle) now explicitly checks isCommandAllowed before firing since it bypasses the terminal-bus entirely; added local throttleUs state (optimistic ±50 display, not hardware-confirmed) incremented/decremented on h/l; added keyboardShortcutUses counter that auto-collapses the bottom nav after 2+ keyboard shortcut uses. 4. BottomNavBar.tsx — redesigned: unmounts entirely (returns null) when no session is active; otherwise shows a taskbar-style ribbon that can collapse to a small pull-tab (hover peeks it open, click pins/unpins); relabeled Speed +/- to "Speed Up"/"Speed Down"; added per-button accent colors (chart-2/3/4/5 tokens); added a live throttle readout (µs) under the Speed Up/Down buttons. Please check: (a) whether the module-level singleton in command-gate.ts could leak session state across component remounts/hot-reload or cause stale-gate bugs, (b) whether gating is actually applied consistently everywhere a command could originate (terminal typed input, global keydown, bottom-nav clicks, IR remote) — look for any path that still bypasses the gate, (c) correctness/race issues in the new keyboard-driven session-start handler vs. the existing IR CH+ handler (duplicated logic drift), (d) whether the optimistic throttleUs display can drift from hardware truth in a misleading way, (e) any accessibility/hover-only interaction issues in the new auto-hide nav (e.g. keyboard-only or touch users unable to reveal it), (f) general correctness/DRY bugs. Report concrete file/line findings.
+Task
+Review UX/behavior changes to the Gyro Monitor dashboard bottom quick-actions bar and command gating (artifacts/gyro-dashboard):
+
+1. New src/lib/command-gate.ts — module-level mutable "sessionActive" flag + isCommandAllowed(cmdKey, rawText). Before a session is active, only 'x'/'X'/CMD:MOTOR_STOP/CMD:EMERGENCY_STOP are allowed; everything else is rejected.
+2. SystemTerminal.tsx submitCommand() now calls isCommandAllowed before sending any command (single-char shortcuts or CMD: strings), rejecting with a "blocked — start a session first" terminal line otherwise. This is the single enforcement point for the terminal input, global keyboard shortcuts (routed via terminal-bus), and bottom-nav buttons (also routed via terminal-bus).
+3. dashboard.tsx: added a useEffect syncing command-gate's sessionActive with the real session state; added new 'q'/'Q' global keyboard shortcut to start a session (mirrors the existing CH+ IR handler in SessionControl.tsx, duplicated fetch logic); 'a' (PID toggle) now explicitly checks isCommandAllowed before firing since it bypasses the terminal-bus entirely; added local throttleUs state (optimistic ±50 display, not hardware-confirmed) incremented/decremented on h/l; added keyboardShortcutUses counter that auto-collapses the bottom nav after 2+ keyboard shortcut uses.
+4. BottomNavBar.tsx — redesigned: unmounts entirely (returns null) when no session is active; otherwise shows a taskbar-style ribbon that can collapse to a small pull-tab (hover peeks it open, click pins/unpins); relabeled Speed +/- to "Speed Up"/"Speed Down"; added per-button accent colors (chart-2/3/4/5 tokens); added a live throttle readout (µs) under the Speed Up/Down buttons.
+
+Please check: (a) whether the module-level singleton in command-gate.ts could leak session state across component remounts/hot-reload or cause stale-gate bugs, (b) whether gating is actually applied consistently everywhere a command could originate (terminal typed input, global keydown, bottom-nav clicks, IR remote) — look for any path that still bypasses the gate, (c) correctness/race issues in the new keyboard-driven session-start handler vs. the existing IR CH+ handler (duplicated logic drift), (d) whether the optimistic throttleUs display can drift from hardware truth in a misleading way, (e) any accessibility/hover-only interaction issues in the new auto-hide nav (e.g. keyboard-only or touch users unable to reveal it), (f) general correctness/DRY bugs. Report concrete file/line findings.
+Show less
+
+5 actions
+Working
+Result
+Fail — the command-gating objective is mostly met, but there are correctness gaps in the new quick-actions/session-start behavior that can mislead users and cause inconsistent control outcomes.
+
+Critical findings:
+
+Command gate coverage is largely correct for terminal input + terminal-bus paths: SystemTerminal.submitCommand enforces isCommandAllowed before send (src/components/SystemTerminal.tsx:284-294), and dashboard s/x/h/l/z/w shortcuts plus bottom-nav actions route through sendTerminalCommand (src/pages/dashboard.tsx:568-581, src/components/BottomNavBar.tsx:55-72).
+IR and other non-terminal paths do bypass command-gate by design and rely on separate guards (src/components/SessionControl.tsx:205-287; dashboard Esc/session-start handlers at src/pages/dashboard.tsx:498-556). This is functional but creates policy drift risk because gating logic is now duplicated across modules.
+The new optimistic throttle readout is materially inaccurate: throttleUs is only adjusted for keyboard h/l in dashboard (src/pages/dashboard.tsx:579-580). Bottom-nav h/l, terminal-typed h/l / CMD:SPEED_*, and IR/other hardware-side changes do not update it (BottomNavBar.tsx:63,71; SystemTerminal.tsx send path), so the displayed µs can diverge from actual motor state.
+Keyboard q session-start handler duplicates CH+ logic and lacks in-flight dedupe (src/pages/dashboard.tsx:523-555), so repeated key presses can trigger multiple concurrent POST /api/session calls before session state flips. This same pattern exists in IR CH+ (SessionControl.tsx:230-264), confirming drift/consistency risk from duplicated start logic.
+Auto-hide nav has accessibility concerns: collapsed reveal depends on hover/low-visibility pull-tab behavior (BottomNavBar.tsx:90-100,102-109), with no explicit keyboard/focus affordance indicators or aria labeling for the tab control.
+Security: none observed (no serious auth/injection/secret handling regressions in these changes).
+
+Next actions:
+
+Introduce a single shared startSession action (used by CH+, keyboard q, and start button) with a pending/lock guard to prevent duplicate requests.
+Make throttle display explicitly “estimated” and update from all command origins (terminal submit observer + bottom-nav + keyboard), or remove live µs readout until hardware truth is available.
+Improve bottom-nav accessibility: add clear focus-visible behavior + aria-label for pull-tab and ensure reveal/collapse is fully operable without hover.
+You've reached your daily free quota limit. It will reset at 12:00 AM UTC.
+
+
+Worked for 6 minutes
+this app is meant to work in full screen so ensure all things will fit without the need to scroll to see all
+
+10 minutes ago
+You've reached your daily free quota limit. It will reset at 12:00 AM UTC.
+
+
+Worked for 2 seconds
+
+Scroll to latest
+You're out of credit
