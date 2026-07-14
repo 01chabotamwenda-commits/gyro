@@ -212,6 +212,10 @@ int   minSpeedUs = 1250;
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 bool autoMode = false;
+// millis() timestamp of the last enterAutoMode() call — drives a short
+// soft-engage ramp so the correction authority builds up gradually instead
+// of applying full PID output (and any transient seeded integral) instantly.
+unsigned long autoModeEnteredMs = 0;
 
 // ── Onboard LED feedback ───────────────────────────────────────────────────────
 // Shared by IR, serial, HTTP, and TCP handlers so ANY command source lights
@@ -270,6 +274,11 @@ float AUTO_MODE_INTEGRAL_SEED_FACTOR = 0.5f;
 // Auto mode's PID correction (µs-equivalent) is scaled by this factor before
 // being added to the base throttle. This is the "0.1" multiplier.
 float AUTO_CORRECTION_TO_PULSE_SCALE = 0.1f;
+// Soft-engage ramp: for this many milliseconds after entering auto mode, the
+// correction authority is scaled from 0 -> 1 linearly. Prevents any startup
+// transient (seeded integral, initial tilt error, etc.) from being applied
+// at full strength the instant auto mode is engaged.
+const unsigned long AUTO_ENGAGE_RAMP_MS = 1500;
 
 // ── Setpoint (degrees from reference) ────────────────────────────────────────
 float setpointX = 0.0f;   // target tilt X (0 = balanced)
@@ -1057,12 +1066,17 @@ static void enterAutoMode(const char *reason) {
   // }
   if (!autoMode) {
     // Bumpless: seed integrals from current throttle deviation
-    // so there is no step on the ESC when entering auto.
-    integralX = (float)(motorThrottle - manualThrottle) * AUTO_MODE_INTEGRAL_SEED_FACTOR;
+    // so there is no step on the ESC when entering auto. Clamped to the
+    // same bounds as the steady-state integral (see runBalanceController())
+    // so a stale/large motorThrottle-manualThrottle gap (e.g. caught mid-ramp)
+    // can never seed an out-of-range integral.
+    integralX = constrain((float)(motorThrottle - manualThrottle) * AUTO_MODE_INTEGRAL_SEED_FACTOR,
+                           -MAX_CORRECTION_US * INTEGRAL_CLAMP_FACTOR, MAX_CORRECTION_US * INTEGRAL_CLAMP_FACTOR);
     integralY = integralX;
     setpointX = 0.0f;
     setpointY = 0.0f;
     autoMode  = true;
+    autoModeEnteredMs = millis();
     Serial.printf("[MODE] Auto (%s) — RPM=%.0f\n", reason, currentRPM);
   }
 }
@@ -1313,7 +1327,9 @@ static float runBalanceController(float dt) {
 // → disturbance growth time-constant ≈ 100 ms). In auto mode we write the
 // corrected ESC value directly; the ramp is only used for base throttle changes.
 static void applyAutoThrottle(int targetUs) {
-  targetUs = constrain(targetUs, MIN_THROTTLE, MAX_THROTTLE);
+  // Same floor rule as the caller: auto mode must never write a pulse below
+  // MIN_THROTTLE or below the operator's manual pulse.
+  targetUs = constrain(targetUs, max(MIN_THROTTLE, manualThrottle), MAX_THROTTLE);
   motorRampTarget = targetUs;   // keep ramp state consistent for bumpless exit
   setThrottle(targetUs);        // write immediately — no ramp delay
 }
@@ -2025,14 +2041,28 @@ void loop() {
       correction = runBalanceController(dt);
     }
 
+    // Soft-engage: scale correction authority from 0 -> 1 over
+    // AUTO_ENGAGE_RAMP_MS after entering auto mode, so nothing (seeded
+    // integral, initial tilt error, etc.) can apply a full-strength
+    // correction the instant auto mode turns on.
+    float engageRamp = 1.0f;
+    if (autoMode) {
+      unsigned long sinceEngage = millis() - autoModeEnteredMs;
+      engageRamp = (sinceEngage >= AUTO_ENGAGE_RAMP_MS)
+                     ? 1.0f
+                     : (float)sinceEngage / (float)AUTO_ENGAGE_RAMP_MS;
+    }
+
     pidCorrectionValue = correction;
-    heldFinalPulse     = correction * AUTO_CORRECTION_TO_PULSE_SCALE;
+    heldFinalPulse     = correction * AUTO_CORRECTION_TO_PULSE_SCALE * engageRamp;
 
     float targetF  = (float)manualThrottle + heldFinalPulse;
     // Manual mode may command throttle below MIN_THROTTLE (down to
     // ARM_THROTTLE) — that's an intentional operator override. Auto/PID
-    // mode must never go below MIN_THROTTLE, so its floor stays fixed.
-    int   loFloor  = autoMode ? MIN_THROTTLE : ARM_THROTTLE;
+    // mode must never drive the ESC pulse below MIN_THROTTLE *or* below the
+    // manual pulse the operator had dialed in — the PID only ever adds
+    // correction on top of manualThrottle, it never undercuts it.
+    int   loFloor  = autoMode ? max(MIN_THROTTLE, manualThrottle) : ARM_THROTTLE;
     int   targetUs = constrain((int)roundf(targetF), loFloor, MAX_THROTTLE);
     heldEscPulseUs = (float)targetUs;
     sentMotorPulse = (float)targetUs;
